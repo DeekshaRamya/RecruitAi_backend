@@ -1,9 +1,12 @@
 import httpx
-from sqlalchemy.orm import Session
+from datetime import datetime, timezone
+import uuid
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
 from fastapi import HTTPException, status
 from app.core.config import settings
 from app.core import security
-from app.database.models import User, UserRole
+from app.database.models import User, UserRole, LoginHistory
 from app.schemas.candidate import CandidateRegisterRequest, CandidateLoginRequest
 from app.schemas.auth import TokenResponse, UserResponse
 
@@ -17,10 +20,11 @@ class AuthService:
         return {"role": UserRole.RECRUITER, "redirect": "/recruiter/dashboard"}
 
     @classmethod
-    def register_candidate(cls, request: CandidateRegisterRequest, db: Session) -> TokenResponse:
+    async def register_candidate(cls, request: CandidateRegisterRequest, db: AsyncSession) -> TokenResponse:
         """Register a new candidate and return tokens and profile."""
         # 1. Check if email is already registered
-        existing_user = db.query(User).filter(User.email == request.email).first()
+        result = await db.execute(select(User).where(User.email == request.email))
+        existing_user = result.scalar_one_or_none()
         if existing_user:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -32,16 +36,16 @@ class AuthService:
 
         # 3. Create candidate user
         new_candidate = User(
-            name=request.name,
+            full_name=request.name,
             email=request.email,
-            password_hash=hashed_password,
+            password=hashed_password,
             phone=request.phone,
             role=UserRole.CANDIDATE
         )
         
         db.add(new_candidate)
-        db.commit()
-        db.refresh(new_candidate)
+        await db.commit()
+        await db.refresh(new_candidate)
 
         # 4. Generate local JWTs
         access_token = security.create_access_token(new_candidate.id, new_candidate.email, new_candidate.role.value)
@@ -58,24 +62,34 @@ class AuthService:
         )
 
     @classmethod
-    def login_candidate(cls, request: CandidateLoginRequest, db: Session) -> TokenResponse:
-        """Authenticate a candidate using email and password."""
+    async def login_candidate(cls, request: CandidateLoginRequest, db: AsyncSession, ip_address: str | None = None, device: str | None = None) -> TokenResponse:
+        """Authenticate a candidate or recruiter using email and password."""
         # 1. Retrieve user
-        user = db.query(User).filter(User.email == request.email, User.role == UserRole.CANDIDATE).first()
-        if not user or not user.password_hash:
+        result = await db.execute(select(User).where(User.email == request.email))
+        user = result.scalar_one_or_none()
+        if not user or not user.password:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid email or password"
             )
 
         # 2. Verify password
-        if not security.verify_password(request.password, user.password_hash):
+        if not security.verify_password(request.password, user.password):
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid email or password"
             )
 
-        # 3. Generate tokens
+        # 3. Store login history details
+        login_history = LoginHistory(
+            user_id=user.id,
+            ip_address=ip_address,
+            device=device
+        )
+        db.add(login_history)
+        await db.commit()
+
+        # 4. Generate tokens
         access_token = security.create_access_token(user.id, user.email, user.role.value)
         refresh_token = security.create_refresh_token(user.id, user.email, user.role.value)
 
@@ -111,7 +125,7 @@ class AuthService:
         return auth_url
 
     @classmethod
-    async def authenticate_microsoft_user(cls, code: str, db: Session) -> TokenResponse:
+    async def authenticate_microsoft_user(cls, code: str, db: AsyncSession, ip_address: str | None = None, device: str | None = None) -> TokenResponse:
         """Exchange auth code for Microsoft access token, get user profile, and register/login recruiter."""
         tenant = settings.MICROSOFT_TENANT_ID
         token_url = f"https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token"
@@ -174,31 +188,42 @@ class AuthService:
             )
 
         # 3. Lookup recruiter in the local DB. Check by microsoft_id first, then email.
-        recruiter = db.query(User).filter(User.microsoft_id == microsoft_id).first()
+        result = await db.execute(select(User).where(User.microsoft_id == microsoft_id))
+        recruiter = result.scalar_one_or_none()
         
         if not recruiter:
             # If not found by microsoft_id, check if email exists
-            recruiter = db.query(User).filter(User.email == email).first()
+            result = await db.execute(select(User).where(User.email == email))
+            recruiter = result.scalar_one_or_none()
             if recruiter:
-                # User exists but hasn't linked Microsoft accounts (or is a candidate who is now registering as recruiter)
-                # Link Microsoft ID and update role to Recruiter if it's new
+                # User exists but hasn't linked Microsoft accounts
+                # Link Microsoft ID and update role to Recruiter
                 recruiter.microsoft_id = microsoft_id
                 recruiter.role = UserRole.RECRUITER
-                db.commit()
-                db.refresh(recruiter)
+                await db.commit()
+                await db.refresh(recruiter)
             else:
                 # Create a new Recruiter record automatically
                 recruiter = User(
-                    name=name,
+                    full_name=name,
                     email=email,
                     microsoft_id=microsoft_id,
                     role=UserRole.RECRUITER
                 )
                 db.add(recruiter)
-                db.commit()
-                db.refresh(recruiter)
+                await db.commit()
+                await db.refresh(recruiter)
 
-        # 4. Generate local JWT access & refresh tokens
+        # 4. Store login history details
+        login_history = LoginHistory(
+            user_id=recruiter.id,
+            ip_address=ip_address,
+            device=device
+        )
+        db.add(login_history)
+        await db.commit()
+
+        # 5. Generate local JWT access & refresh tokens
         access_token = security.create_access_token(recruiter.id, recruiter.email, recruiter.role.value)
         refresh_token = security.create_refresh_token(recruiter.id, recruiter.email, recruiter.role.value)
 
@@ -213,7 +238,7 @@ class AuthService:
         )
 
     @classmethod
-    def refresh_user_tokens(cls, refresh_token: str, db: Session) -> TokenResponse:
+    async def refresh_user_tokens(cls, refresh_token: str, db: AsyncSession) -> TokenResponse:
         """Validate refresh token and issue new access & refresh tokens."""
         # 1. Decode token
         payload = security.decode_token(refresh_token)
@@ -233,7 +258,6 @@ class AuthService:
                 headers={"WWW-Authenticate": "Bearer"},
             )
             
-        import uuid
         try:
             user_uuid = uuid.UUID(user_id)
         except ValueError:
@@ -243,7 +267,8 @@ class AuthService:
                 headers={"WWW-Authenticate": "Bearer"},
             )
 
-        user = db.query(User).filter(User.id == user_uuid).first()
+        result = await db.execute(select(User).where(User.id == user_uuid))
+        user = result.scalar_one_or_none()
         if not user:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,

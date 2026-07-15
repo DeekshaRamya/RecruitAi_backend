@@ -1,16 +1,24 @@
 import logging
+import sys
+import asyncio
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, status
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.exceptions import RequestValidationError
 from app.core.config import settings
-# TODO: Restore database and other router imports after AI testing is complete.
-# from app.database.database import engine, Base
-# from app.api.auth import router as auth_router
-# from app.api.candidate import router as candidate_router
-# from app.api.recruiter import router as recruiter_router
+
+# Fix psycopg3 event loop incompatibility on Windows
+if sys.platform == "win32":
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
+from app.database.database import engine, Base
+from app.api.auth import router as auth_router
+from app.api.users import router as users_router
+from app.api.candidate import router as candidate_router
+from app.api.recruiter import router as recruiter_router
 from app.api.assessment import router as assessment_router
+from app.api.interview import router as interview_router
 
 # Setup Logging
 logging.basicConfig(
@@ -22,21 +30,32 @@ logger = logging.getLogger("recruitai-backend")
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """
-    FastAPI Lifespan handler. Handles database table creation on startup.
+    FastAPI Lifespan handler. Handles database table creation asynchronously on startup.
     """
-    # TODO: Restore database initialization logic after AI testing is complete.
-    # logger.info("Initializing database tables...")
-    # try:
-    #     # Create all tables defined in Base.metadata if they do not exist
-    #     # In production environments, database migrations (e.g. Alembic) are used.
-    #     Base.metadata.create_all(bind=engine)
-    #     logger.info("Database tables initialized successfully.")
-    # except Exception as e:
-    #     logger.warning(
-    #         f"Failed to automatically initialize database tables: {e}. "
-    #         "Please ensure your database is running and configured correctly in .env."
-    #     )
-    logger.info("RecruitAI AI Test Server Started")
+    logger.info("Initializing database tables...")
+    try:
+        # Try initializing primary database connection (PostgreSQL)
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        logger.info("Database tables initialized successfully on primary database.")
+    except Exception as e:
+        logger.warning(
+            f"Primary database connection failed: {e}. "
+            "Switching connection engine to local SQLite database..."
+        )
+        try:
+            # Switch DB session bindings to fallback SQLite
+            from app.database.database import switch_to_sqlite, fallback_engine
+            switch_to_sqlite()
+            
+            # Initialize local SQLite tables
+            async with fallback_engine.begin() as conn:
+                await conn.run_sync(Base.metadata.create_all)
+            logger.info("Database tables initialized successfully on local SQLite database (recruitai.db).")
+        except Exception as sqle:
+            logger.error(f"Failed to initialize local fallback SQLite database: {sqle}")
+            
+    logger.info("RecruitAI Backend Server Started")
     yield
     logger.info("Shutting down application...")
 
@@ -101,11 +120,12 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
     )
 
 # Include routers
-# TODO: Restore other routers after AI testing is complete.
-# app.include_router(auth_router)
-# app.include_router(candidate_router)
-# app.include_router(recruiter_router)
+app.include_router(auth_router)
+app.include_router(users_router)
+app.include_router(candidate_router)
+app.include_router(recruiter_router)
 app.include_router(assessment_router)
+app.include_router(interview_router)
 
 @app.get("/", tags=["Health Check"])
 def root():
@@ -118,3 +138,16 @@ def root():
         "swagger_ui": "/docs",
         "redoc": "/redoc"
     }
+
+# Legacy Redirect Handler mapping /auth/microsoft/callback to support local .env redirect configuration
+@app.get("/auth/microsoft/callback", include_in_schema=False)
+async def legacy_microsoft_callback(
+    request: Request,
+    code: str,
+    redirect: bool = True
+):
+    from app.database.database import get_db
+    from app.api.auth import microsoft_callback
+    
+    async for db in get_db():
+        return await microsoft_callback(request, code, db, redirect)

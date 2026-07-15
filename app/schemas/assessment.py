@@ -1,5 +1,6 @@
 from typing import List, Optional
-from pydantic import BaseModel, Field, model_validator, field_validator
+import uuid
+from pydantic import BaseModel, Field, model_validator, field_validator, ConfigDict
 
 class TopicConfig(BaseModel):
     name: str = Field(..., description="Name of the topic")
@@ -82,42 +83,49 @@ class QuestionResponse(BaseModel):
     difficulty: str
     scenario: Optional[str] = None
     question: str
-    options: List[str] = Field(..., min_length=4, max_length=4)
+    options: Optional[List[str]] = Field(default=None)
     correctAnswer: str
+    exampleInput: Optional[str] = None
+    exampleOutput: Optional[str] = None
 
     @model_validator(mode="after")
     def validate_scenario_requirements(self) -> "QuestionResponse":
-        if self.type.upper() == "SCENARIO" and not self.scenario:
-            raise ValueError("Scenario questions must contain a scenario field")
-        
         # Normalize type
         self.type = self.type.upper()
         if self.type not in {"MCQ", "SCENARIO"}:
             raise ValueError("Question type must be MCQ or SCENARIO")
-            
-        # Check that options are not empty and there are exactly 4
-        if len(self.options) != 4:
-            raise ValueError("Options list must contain exactly four items")
-        for opt in self.options:
-            if not opt.strip():
-                raise ValueError("Options cannot be empty strings")
-                
-        # Check for duplicate options
-        if len(set(opt.strip() for opt in self.options)) != 4:
-            raise ValueError("Options list must contain exactly four unique options (no duplicates)")
-                
-        # Validate correctAnswer is one of the options
-        if self.correctAnswer not in self.options:
-            # Try to strip spaces to see if they match
-            stripped_correct = self.correctAnswer.strip()
-            matched = False
+
+        if self.type == "SCENARIO":
+            if not self.scenario:
+                raise ValueError("Scenario questions must contain a scenario field")
+            # Force options to be None/empty for scenario Q&A
+            self.options = None
+        else:
+            # Validate options and correctness for MCQ
+            if not self.options:
+                raise ValueError("Options list is required for MCQ questions")
+            if len(self.options) != 4:
+                raise ValueError("Options list must contain exactly four items")
             for opt in self.options:
-                if opt.strip() == stripped_correct:
-                    self.correctAnswer = opt
-                    matched = True
-                    break
-            if not matched:
-                raise ValueError(f"Correct answer '{self.correctAnswer}' must match one of the options: {self.options}")
+                if not opt or not opt.strip():
+                    raise ValueError("Options cannot be empty strings")
+                
+            # Check for duplicate options
+            if len(set(opt.strip() for opt in self.options)) != 4:
+                raise ValueError("Options list must contain exactly four unique options (no duplicates)")
+                
+            # Validate correctAnswer is one of the options
+            if self.correctAnswer not in self.options:
+                # Try to strip spaces to see if they match
+                stripped_correct = self.correctAnswer.strip()
+                matched = False
+                for opt in self.options:
+                    if opt.strip() == stripped_correct:
+                        self.correctAnswer = opt
+                        matched = True
+                        break
+                if not matched:
+                    raise ValueError(f"Correct answer '{self.correctAnswer}' must match one of the options: {self.options}")
             
         return self
 
@@ -125,3 +133,28 @@ class AssessmentGenerateResponse(BaseModel):
     success: bool
     totalQuestions: int
     questions: List[QuestionResponse]
+
+class AssessmentSaveRequest(BaseModel):
+    name: str
+    subjects: List[str]
+    difficulty: str
+    duration: str
+    questionsCount: int
+    createdDate: str
+    status: str = "Active"
+    candidatesAssigned: int = 0
+    questions: List[dict]
+
+class AssessmentResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    name: str
+    subjects: List[str]
+    difficulty: str
+    duration: str
+    questionsCount: int
+    createdDate: str
+    status: str
+    candidatesAssigned: int
+    questions: List[dict]

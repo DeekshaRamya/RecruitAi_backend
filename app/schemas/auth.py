@@ -7,6 +7,7 @@ class UserResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: uuid.UUID
+    full_name: str
     name: str
     email: EmailStr
     role: UserRole

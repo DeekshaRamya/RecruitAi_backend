@@ -170,12 +170,7 @@ def test_valid_scenario_question_response():
         "difficulty": "Medium",
         "scenario": "A team needs to write a utility helper.",
         "question": "Which design pattern is best?",
-        "options": [
-            "Singleton",
-            "Factory",
-            "Observer",
-            "Strategy"
-        ],
+        "options": None,
         "correctAnswer": "Singleton"
     }
     q = QuestionResponse(**data)
@@ -190,7 +185,7 @@ def test_invalid_scenario_missing_scenario_field():
         "type": "SCENARIO",
         "difficulty": "Medium",
         "question": "Which design pattern is best?",
-        "options": ["A", "B", "C", "D"],
+        "options": None,
         "correctAnswer": "A"
     }
     with pytest.raises(ValidationError) as exc:
@@ -255,8 +250,10 @@ def test_generate_assessment_success(mock_generate_questions):
             "difficulty": "Medium",
             "scenario": "Coding a math script.",
             "question": "What is 2*2?",
-            "options": ["2", "4", "6", "8"],
-            "correctAnswer": "4"
+            "options": None,
+            "correctAnswer": "4",
+            "exampleInput": "2, 2",
+            "exampleOutput": "4"
         }
     ]
 
@@ -283,6 +280,8 @@ def test_generate_assessment_success(mock_generate_questions):
     assert response.questions[0].type == "MCQ"
     assert response.questions[1].type == "SCENARIO"
     assert response.questions[1].scenario == "Coding a math script."
+    assert response.questions[1].exampleInput == "2, 2"
+    assert response.questions[1].exampleOutput == "4"
 
 
 @patch("app.services.azure_openai_service.AzureOpenAIService.generate_questions")
@@ -343,4 +342,4 @@ def test_generate_assessment_validation_failure(mock_generate_questions):
     with pytest.raises(HTTPException) as exc:
         asyncio.run(service.generate_assessment(request))
     assert exc.value.status_code == 500
-    assert "AI generated questions did not meet the required format constraints" in exc.value.detail["message"]
+    assert "Azure OpenAI response formatting error" in exc.value.detail
