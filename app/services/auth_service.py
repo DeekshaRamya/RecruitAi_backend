@@ -43,9 +43,16 @@ class AuthService:
             role=UserRole.CANDIDATE
         )
         
-        db.add(new_candidate)
-        await db.commit()
-        await db.refresh(new_candidate)
+        try:
+            db.add(new_candidate)
+            await db.commit()
+            await db.refresh(new_candidate)
+        except Exception as e:
+            await db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Database error during candidate registration: {str(e)}"
+            )
 
         # 4. Generate local JWTs
         access_token = security.create_access_token(new_candidate.id, new_candidate.email, new_candidate.role.value)
@@ -86,8 +93,15 @@ class AuthService:
             ip_address=ip_address,
             device=device
         )
-        db.add(login_history)
-        await db.commit()
+        try:
+            db.add(login_history)
+            await db.commit()
+        except Exception as e:
+            await db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Database error storing login history: {str(e)}"
+            )
 
         # 4. Generate tokens
         access_token = security.create_access_token(user.id, user.email, user.role.value)
@@ -191,28 +205,35 @@ class AuthService:
         result = await db.execute(select(User).where(User.microsoft_id == microsoft_id))
         recruiter = result.scalar_one_or_none()
         
-        if not recruiter:
-            # If not found by microsoft_id, check if email exists
-            result = await db.execute(select(User).where(User.email == email))
-            recruiter = result.scalar_one_or_none()
-            if recruiter:
-                # User exists but hasn't linked Microsoft accounts
-                # Link Microsoft ID and update role to Recruiter
-                recruiter.microsoft_id = microsoft_id
-                recruiter.role = UserRole.RECRUITER
-                await db.commit()
-                await db.refresh(recruiter)
-            else:
-                # Create a new Recruiter record automatically
-                recruiter = User(
-                    full_name=name,
-                    email=email,
-                    microsoft_id=microsoft_id,
-                    role=UserRole.RECRUITER
-                )
-                db.add(recruiter)
-                await db.commit()
-                await db.refresh(recruiter)
+        try:
+            if not recruiter:
+                # If not found by microsoft_id, check if email exists
+                result = await db.execute(select(User).where(User.email == email))
+                recruiter = result.scalar_one_or_none()
+                if recruiter:
+                    # User exists but hasn't linked Microsoft accounts
+                    # Link Microsoft ID and update role to Recruiter
+                    recruiter.microsoft_id = microsoft_id
+                    recruiter.role = UserRole.RECRUITER
+                    await db.commit()
+                    await db.refresh(recruiter)
+                else:
+                    # Create a new Recruiter record automatically
+                    recruiter = User(
+                        full_name=name,
+                        email=email,
+                        microsoft_id=microsoft_id,
+                        role=UserRole.RECRUITER
+                    )
+                    db.add(recruiter)
+                    await db.commit()
+                    await db.refresh(recruiter)
+        except Exception as e:
+            await db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Database error linking or creating Microsoft user: {str(e)}"
+            )
 
         # 4. Store login history details
         login_history = LoginHistory(
@@ -220,8 +241,15 @@ class AuthService:
             ip_address=ip_address,
             device=device
         )
-        db.add(login_history)
-        await db.commit()
+        try:
+            db.add(login_history)
+            await db.commit()
+        except Exception as e:
+            await db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Database error storing Microsoft login history: {str(e)}"
+            )
 
         # 5. Generate local JWT access & refresh tokens
         access_token = security.create_access_token(recruiter.id, recruiter.email, recruiter.role.value)
@@ -259,7 +287,7 @@ class AuthService:
             )
             
         try:
-            user_uuid = uuid.UUID(user_id)
+            user_int_id = int(user_id)
         except ValueError:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
@@ -267,7 +295,7 @@ class AuthService:
                 headers={"WWW-Authenticate": "Bearer"},
             )
 
-        result = await db.execute(select(User).where(User.id == user_uuid))
+        result = await db.execute(select(User).where(User.id == user_int_id))
         user = result.scalar_one_or_none()
         if not user:
             raise HTTPException(

@@ -10,9 +10,13 @@ from app.core.config import settings
 
 # Fix psycopg3 event loop incompatibility on Windows
 if sys.platform == "win32":
+    import asyncio
+    asyncio.WindowsProactorEventLoopPolicy = asyncio.WindowsSelectorEventLoopPolicy
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
+from sqlalchemy import text
 from app.database.database import engine, Base
+from app.database.models import User, LoginHistory, Assessment
 from app.api.auth import router as auth_router
 from app.api.users import router as users_router
 from app.api.candidate import router as candidate_router
@@ -30,32 +34,69 @@ logger = logging.getLogger("recruitai-backend")
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """
-    FastAPI Lifespan handler. Handles database table creation asynchronously on startup.
+    FastAPI Lifespan handler. Handles database table creation and diagnostics asynchronously on startup.
     """
-    logger.info("Initializing database tables...")
+    logger.info("Starting up RecruitAI Backend...")
+    
+    # 1. Mask database URL password for diagnostic logging
+    db_url = settings.DATABASE_URL
+    masked_url = db_url
+    if "@" in db_url:
+        left, right = db_url.split("@", 1)
+        if ":" in left:
+            scheme_user, _ = left.rsplit(":", 1)
+            masked_url = f"{scheme_user}:******@{right}"
+            
+    logger.info(f"Database Configured URL: {masked_url}")
+    logger.info(f"SQLAlchemy Engine Type: {type(engine).__name__}")
+    
+    # List registered models & tables
+    model_names = [mapper.class_.__name__ for mapper in Base.registry.mappers]
+    table_names = list(Base.metadata.tables.keys())
+    
+    logger.info(f"SQLAlchemy Discovered Models ({len(model_names)}): {model_names}")
+    logger.info(f"SQLAlchemy Discovered Tables ({len(table_names)}): {table_names}")
+
     try:
-        # Try initializing primary database connection (PostgreSQL)
+        # 2. Get connection metadata (database and schema)
+        async with engine.connect() as conn:
+            db_name_result = await conn.execute(text("SELECT current_database()"))
+            db_name = db_name_result.scalar()
+            
+            db_schema_result = await conn.execute(text("SELECT current_schema()"))
+            db_schema = db_schema_result.scalar()
+            
+            logger.info(f"Successfully connected to Database: '{db_name}' | Schema: '{db_schema}'")
+            
+        # 3. Create tables
+        logger.info("Executing Base.metadata.create_all() on primary database...")
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
-        logger.info("Database tables initialized successfully on primary database.")
+        logger.info("CREATE TABLE statements executed successfully.")
+        
+        # 4. Verify table presence
+        async with engine.connect() as conn:
+            def get_table_names(sync_conn):
+                from sqlalchemy import inspect
+                inspector = inspect(sync_conn)
+                return inspector.get_table_names()
+            
+            existing_tables = await conn.run_sync(get_table_names)
+            logger.info(f"Verified actual tables present in Database: {existing_tables}")
+            
+            expected_tables = ["users", "login_history", "assessments"]
+            missing_tables = [t for t in expected_tables if t not in existing_tables]
+            if missing_tables:
+                logger.error(f"🚨 Missing tables in database: {missing_tables}")
+            else:
+                logger.info("✅ All required tables successfully verified and present in PostgreSQL.")
+                
     except Exception as e:
-        logger.warning(
-            f"Primary database connection failed: {e}. "
-            "Switching connection engine to local SQLite database..."
-        )
-        try:
-            # Switch DB session bindings to fallback SQLite
-            from app.database.database import switch_to_sqlite, fallback_engine
-            switch_to_sqlite()
+        logger.error(f"🚨 Critical Database Initialization Error: {e}")
+        # Re-raise to crash application startup because SQLite fallback is removed
+        raise e
             
-            # Initialize local SQLite tables
-            async with fallback_engine.begin() as conn:
-                await conn.run_sync(Base.metadata.create_all)
-            logger.info("Database tables initialized successfully on local SQLite database (recruitai.db).")
-        except Exception as sqle:
-            logger.error(f"Failed to initialize local fallback SQLite database: {sqle}")
-            
-    logger.info("RecruitAI Backend Server Started")
+    logger.info("RecruitAI Backend Server Started Successfully")
     yield
     logger.info("Shutting down application...")
 
