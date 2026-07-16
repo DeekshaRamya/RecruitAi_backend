@@ -2,7 +2,7 @@ import uuid
 import enum
 from datetime import datetime
 from sqlalchemy import String, Enum, DateTime, func, ForeignKey, Uuid, JSON
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.database.database import Base
 
 class UserRole(str, enum.Enum):
@@ -104,4 +104,203 @@ class Assessment(Base):
     @property
     def candidatesAssigned(self) -> int:
         return self.candidates_assigned
+
+class AssessmentAssignment(Base):
+    __tablename__ = "assessment_assignments"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), 
+        primary_key=True, 
+        default=uuid.uuid4
+    )
+    assessment_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("assessments.id", ondelete="CASCADE"),
+        nullable=False
+    )
+    candidate_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False
+    )
+    recruiter_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False
+    )
+    assigned_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), 
+        server_default=func.now(),
+        nullable=False
+    )
+    due_date: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True
+    )
+    start_time: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True
+    )
+    end_time: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True
+    )
+    instructions: Mapped[str | None] = mapped_column(
+        String(1000),
+        nullable=True
+    )
+    status: Mapped[str] = mapped_column(
+        String(50),
+        default="ASSIGNED",
+        nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), 
+        server_default=func.now(),
+        nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), 
+        server_default=func.now(), 
+        onupdate=func.now(),
+        nullable=False
+    )
+
+    # Relationships
+    assessment = relationship("Assessment")
+    candidate = relationship("User", foreign_keys=[candidate_id])
+    recruiter = relationship("User", foreign_keys=[recruiter_id])
+    result = relationship("AssessmentResult", back_populates="assignment", uselist=False, cascade="all, delete-orphan")
+
+    # Compatibility properties for frontend/Pydantic
+    @property
+    def assessmentId(self) -> uuid.UUID:
+        return self.assessment_id
+
+    @property
+    def candidateId(self) -> uuid.UUID:
+        return self.candidate_id
+
+    @property
+    def recruiterId(self) -> uuid.UUID:
+        return self.recruiter_id
+
+    @property
+    def assignedAt(self) -> datetime:
+        return self.assigned_at
+
+    @property
+    def dueDate(self) -> datetime | None:
+        return self.due_date
+
+    @property
+    def startTime(self) -> datetime | None:
+        return self.start_time
+
+    @property
+    def endTime(self) -> datetime | None:
+        return self.end_time
+
+    @property
+    def candidateName(self) -> str:
+        return self.candidate.full_name if self.candidate else ""
+
+    @property
+    def candidateEmail(self) -> str:
+        return self.candidate.email if self.candidate else ""
+
+    @property
+    def assessmentName(self) -> str:
+        return self.assessment.name if self.assessment else ""
+
+    @property
+    def score(self) -> float | None:
+        return self.result.marks_obtained if self.result else None
+
+    @property
+    def createdAt(self) -> datetime:
+        return self.created_at
+
+    @property
+    def updatedAt(self) -> datetime:
+        return self.updated_at
+
+class CandidateAnswer(Base):
+    __tablename__ = "candidate_answers"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), 
+        primary_key=True, 
+        default=uuid.uuid4
+    )
+    assignment_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("assessment_assignments.id", ondelete="CASCADE"),
+        nullable=False
+    )
+    candidate_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False
+    )
+    question_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    candidate_answer: Mapped[str] = mapped_column(String(4000), nullable=False)
+    submitted_time: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False
+    )
+    is_correct: Mapped[bool | None] = mapped_column(nullable=True)
+    marks_awarded: Mapped[float] = mapped_column(default=0.0, nullable=False)
+    feedback: Mapped[str | None] = mapped_column(String(4000), nullable=True)
+    status: Mapped[str] = mapped_column(String(50), default="Incorrect", nullable=False)  # "Correct", "Incorrect", "Partially Correct"
+
+    # Relationships
+    assignment = relationship("AssessmentAssignment")
+    candidate = relationship("User")
+
+class AssessmentResult(Base):
+    __tablename__ = "assessment_results"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), 
+        primary_key=True, 
+        default=uuid.uuid4
+    )
+    assignment_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("assessment_assignments.id", ondelete="CASCADE"),
+        unique=True,
+        nullable=False
+    )
+    candidate_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False
+    )
+    assessment_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("assessments.id", ondelete="CASCADE"),
+        nullable=False
+    )
+    total_questions: Mapped[int] = mapped_column(nullable=False)
+    correct_answers: Mapped[int] = mapped_column(nullable=False)
+    wrong_answers: Mapped[int] = mapped_column(nullable=False)
+    unanswered_questions: Mapped[int] = mapped_column(nullable=False)
+    marks_obtained: Mapped[float] = mapped_column(nullable=False)
+    max_marks: Mapped[float] = mapped_column(nullable=False)
+    percentage: Mapped[float] = mapped_column(nullable=False)
+    pass_fail: Mapped[str] = mapped_column(String(10), nullable=False)  # "Pass" or "Fail"
+    time_taken: Mapped[int] = mapped_column(nullable=False)  # in seconds
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), 
+        server_default=func.now(),
+        nullable=False
+    )
+
+    # Relationships
+    assignment = relationship("AssessmentAssignment", back_populates="result")
+    candidate = relationship("User")
+    assessment = relationship("Assessment")
+
 

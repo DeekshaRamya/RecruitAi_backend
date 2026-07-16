@@ -257,15 +257,68 @@ Response Schema:
 }}"""
         return prompt
 
-    async def analyze_resume(self, resume_text: str) -> Dict[str, Any]:
+
+    async def evaluate_assessment_answer(self, question: str, scenario: str, correct_answer: str, candidate_answer: str) -> Dict[str, Any]:
         """
-        Sends the extracted resume text to Azure OpenAI for parsing, scoring,
-        and generating strength bullet points.
+        Evaluates a candidate's descriptive or scenario-based assessment answer using Azure OpenAI.
         """
-        prompt = f"""Analyze the candidate's resume text below. Evaluate their skills and experience.
-Extract the candidate's name, email (if present), and assign evaluation scores (from 0 to 100) for python_score, sql_score, aptitude_score, and english_score.
-Also assign an overall resume_score (from 0 to 100).
-Finally, write a list of exactly 3 professional feedback statements/strengths under "resume_analysis".
+        prompt = f"""Evaluate the candidate's answer to the following scenario-based assessment question:
+
+Scenario: {scenario}
+Question: {question}
+Reference Correct Answer:
+{correct_answer}
+
+Candidate's Answer:
+{candidate_answer}
+
+CRITICAL RULES AND CONSTRAINTS (YOU MUST COMPLY WITH ALL RULES):
+1. Return ONLY valid JSON. Do NOT wrap the JSON in markdown code blocks like ```json or ```. Return the raw JSON string directly.
+2. Evaluate based on correctness, completeness, technical accuracy, keywords, and logical explanation.
+3. Be fair. Score from 0 to 100.
+4. "status" must be exactly one of: "Correct" (for scores >= 80), "Partially Correct" (for scores between 40 and 79), or "Incorrect" (for scores < 40).
+5. Provide constructive feedback, strengths, and improvements in simple English.
+6. The JSON structure must match the schema below exactly.
+
+Response Schema:
+{{
+  "score": 85,
+  "status": "Correct",
+  "feedback": "Constructive evaluation feedback.",
+  "strengths": "What the candidate did well.",
+  "improvements": "What could be improved."
+}}"""
+        system_message = (
+            "You are an AI assessment evaluator. You must return ONLY a JSON object "
+            "matching the requested schema. Do not include any explanation, markdown, "
+            "or code blocks (no ```json or ```). Your response must be clean JSON."
+        )
+
+        raw_response = await self.client.generate_chat_completion(prompt, system_message)
+        cleaned_json = self._clean_json(raw_response)
+
+        try:
+            data = json.loads(cleaned_json)
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to decode Azure OpenAI evaluation response as JSON. Raw: {raw_response}. Error: {e}")
+            return {
+                "score": 0,
+                "status": "Incorrect",
+                "feedback": "AI evaluation failed to parse response.",
+                "strengths": "None",
+                "improvements": "None"
+            }
+
+        return {
+            "score": data.get("score", 0),
+            "status": data.get("status", "Incorrect"),
+            "feedback": data.get("feedback", "No feedback provided."),
+            "strengths": data.get("strengths", "No strengths highlighted."),
+            "improvements": data.get("improvements", "No improvement areas identified.")
+        }
+
+
+
 
 Resume Text:
 {resume_text}

@@ -110,3 +110,27 @@ async def download_candidate_resume(
         media_type="application/octet-stream", 
         filename=candidate.resume_filename
     )
+
+
+from app.database.models import UserRole
+from app.schemas.recruiter import CandidateDetailResponse
+
+candidates_router = APIRouter(prefix="/api/candidates", tags=["Candidates"])
+
+@candidates_router.get(
+    "",
+    summary="Get all Candidates",
+    response_model=List[CandidateDetailResponse]
+)
+async def get_all_candidates(
+    current_user: User = Depends(require_recruiter),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Retrieves all candidates registered in the platform. Access restricted to Recruiters.
+    """
+    result = await db.execute(
+        select(User).where(User.role == UserRole.CANDIDATE).order_by(User.created_at.desc())
+    )
+    candidates = result.scalars().all()
+    return candidates

@@ -158,3 +158,12 @@ class AssessmentResponse(BaseModel):
     status: str
     candidatesAssigned: int
     questions: List[dict]
+
+class AssessmentUpdateRequest(BaseModel):
+    name: Optional[str] = None
+    subjects: Optional[List[str]] = None
+    difficulty: Optional[str] = None
+    duration: Optional[str] = None
+    questionsCount: Optional[int] = None
+    questions: Optional[List[dict]] = None
+
