@@ -11,6 +11,13 @@ class UserResponse(BaseModel):
     name: str
     email: EmailStr
     role: UserRole
+    resume_filename: str | None = None
+    resume_score: int | None = None
+    python_score: int | None = None
+    sql_score: int | None = None
+    aptitude_score: int | None = None
+    english_score: int | None = None
+    resume_analysis: list[str] | None = None
 
 # Main Token Authentication Response (including Navigation metadata)
 class TokenResponse(BaseModel):

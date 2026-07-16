@@ -10,7 +10,7 @@ from app.dependencies.auth import require_recruiter
 from app.database.models import User
 from app.schemas.auth import UserResponse
 
-router = APIRouter(prefix="/recruiter", tags=["Recruiter Endpoints"])
+router = APIRouter(prefix="/api/recruiter", tags=["Recruiter Endpoints"])
 
 UPLOAD_DIR = "./uploads"
 

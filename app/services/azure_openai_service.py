@@ -257,4 +257,61 @@ Response Schema:
 }}"""
         return prompt
 
+    async def analyze_resume(self, resume_text: str) -> Dict[str, Any]:
+        """
+        Sends the extracted resume text to Azure OpenAI for parsing, scoring,
+        and generating strength bullet points.
+        """
+        prompt = f"""Analyze the candidate's resume text below. Evaluate their skills and experience.
+Extract the candidate's name, email (if present), and assign evaluation scores (from 0 to 100) for python_score, sql_score, aptitude_score, and english_score.
+Also assign an overall resume_score (from 0 to 100).
+Finally, write a list of exactly 3 professional feedback statements/strengths under "resume_analysis".
 
+Resume Text:
+{resume_text}
+
+CRITICAL RULES AND CONSTRAINTS:
+1. Return ONLY valid JSON. Do NOT wrap the JSON in markdown code blocks like ```json or ```. Return the raw JSON string directly.
+2. The feedback points in "resume_analysis" must be a list of strings, each 1 sentence long, highlight strengths, experience, or areas of expertise.
+3. If email or name is not found in the text, use "N/A" or try your best to estimate.
+4. Ensure all scores are integers.
+5. Do NOT include any explanations, introduction, markdown headers, or footnotes. Only return the JSON object matching the requested schema.
+
+Response Schema:
+{{
+  "name": "Candidate Name",
+  "email": "candidate@example.com",
+  "resume_score": 85,
+  "python_score": 80,
+  "sql_score": 75,
+  "aptitude_score": 70,
+  "english_score": 85,
+  "resume_analysis": [
+    "Demonstrates professional experience in Python development.",
+    "Showcases hands-on knowledge in database structure and SQL queries.",
+    "Clear structure and structured presentation of credentials."
+  ]
+}}"""
+        system_message = (
+            "You are an expert AI resume reviewer. You must return ONLY a JSON object "
+            "matching the requested schema. Do not include any explanation, markdown, "
+            "or code blocks (no ```json or ```). Your response must be clean JSON."
+        )
+        
+        raw_response = await self.client.generate_chat_completion(prompt, system_message)
+        cleaned_json = self._clean_json(raw_response)
+        
+        try:
+            data = json.loads(cleaned_json)
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to decode Azure OpenAI response as JSON. Raw: {raw_response}. Error: {e}")
+            raise ValueError("Azure OpenAI response is not valid JSON") from e
+            
+        # Validate keys and types
+        required_keys = {{"name", "email", "resume_score", "python_score", "sql_score", "aptitude_score", "english_score", "resume_analysis"}}
+        missing_keys = required_keys - data.keys()
+        if missing_keys:
+            logger.error(f"Azure response JSON is missing keys: {{missing_keys}}. Parsed data: {{data}}")
+            raise ValueError(f"Azure OpenAI response is missing keys: {{', '.join(missing_keys)}}")
+            
+        return data
