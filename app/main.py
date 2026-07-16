@@ -92,8 +92,7 @@ async def lifespan(app: FastAPI):
                 logger.info("✅ All required tables successfully verified and present in PostgreSQL.")
                 
     except Exception as e:
-        logger.error(f"🚨 Critical Database Initialization Error: {e}")
-        # Re-raise to crash application startup because SQLite fallback is removed
+        logger.error(f"🚨 Primary database connection or migration failed: {e}")
         raise e
             
     logger.info("RecruitAI Backend Server Started Successfully")
