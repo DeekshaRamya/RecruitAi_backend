@@ -17,24 +17,63 @@ from app.dependencies.auth import require_recruiter, require_candidate, get_curr
 
 router = APIRouter(prefix="/api/assignments", tags=["Assignments"])
 
+def parse_local_or_iso_datetime(dt_str: str, default_end_of_day: bool = False) -> datetime:
+    """
+    Parses datetime string. If string does not contain timezone info, treats it as local time and converts to UTC.
+    """
+    dt_str = dt_str.strip()
+    try:
+        dt = datetime.fromisoformat(dt_str)
+        if dt.tzinfo is None:
+            dt = dt.astimezone()
+        return dt.astimezone(timezone.utc)
+    except Exception:
+        pass
+
+    for fmt in ("%Y-%m-%d %H:%M", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
+        try:
+            dt = datetime.strptime(dt_str, fmt)
+            if fmt == "%Y-%m-%d" and default_end_of_day:
+                dt = dt.replace(hour=23, minute=59, second=59)
+            dt = dt.astimezone()
+            return dt.astimezone(timezone.utc)
+        except Exception:
+            continue
+
+    raise ValueError(f"Invalid datetime format: {dt_str}")
+
 async def check_and_update_expired_assignments(db: AsyncSession):
     now = datetime.now(timezone.utc)
-    # Automatically mark active/scheduled/in_progress assignments as EXPIRED if end time or due date has passed
-    stmt = (
+    
+    # 1. Activate scheduled assignments whose start_time has arrived
+    stmt_activate = (
+        update(AssessmentAssignment)
+        .where(
+            (AssessmentAssignment.status == "SCHEDULED") &
+            (AssessmentAssignment.start_time.is_not(None)) &
+            (AssessmentAssignment.start_time <= now)
+        )
+        .values(status="ASSIGNED", updated_at=now)
+    )
+    await db.execute(stmt_activate)
+
+    # 2. Automatically mark active/scheduled/in_progress assignments as EXPIRED if end time or due date has passed
+    stmt_expire = (
         update(AssessmentAssignment)
         .where(
             (AssessmentAssignment.status.in_(["ASSIGNED", "SCHEDULED", "IN_PROGRESS"])) &
             (
-                (AssessmentAssignment.end_time < now) |
+                (AssessmentAssignment.end_time.is_not(None) & (AssessmentAssignment.end_time < now)) |
                 (
-                    (AssessmentAssignment.end_time.is_(None)) & 
+                    AssessmentAssignment.end_time.is_(None) & 
+                    AssessmentAssignment.due_date.is_not(None) & 
                     (AssessmentAssignment.due_date < now)
                 )
             )
         )
         .values(status="EXPIRED", updated_at=now)
     )
-    await db.execute(stmt)
+    await db.execute(stmt_expire)
     await db.commit()
 
 @router.post(
@@ -98,10 +137,10 @@ async def create_assignment(
     if request.startDate and request.startTime:
         try:
             start_str = f"{request.startDate.strip()} {request.startTime.strip()}"
-            start_time = datetime.strptime(start_str, "%Y-%m-%d %H:%M").replace(tzinfo=timezone.utc)
+            start_time = parse_local_or_iso_datetime(start_str)
         except Exception:
             try:
-                start_time = datetime.fromisoformat(request.startDate).replace(tzinfo=timezone.utc)
+                start_time = parse_local_or_iso_datetime(request.startDate)
             except Exception:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
@@ -111,17 +150,27 @@ async def create_assignment(
     end_time = None
     if request.endTime:
         try:
-            if len(request.endTime.strip()) <= 5:  # e.g., "18:00"
+            if len(request.endTime.strip()) <= 5:
                 date_prefix = request.startDate or datetime.now(timezone.utc).strftime("%Y-%m-%d")
                 end_str = f"{date_prefix.strip()} {request.endTime.strip()}"
-                end_time = datetime.strptime(end_str, "%Y-%m-%d %H:%M").replace(tzinfo=timezone.utc)
+                end_time = parse_local_or_iso_datetime(end_str)
             else:
-                end_time = datetime.fromisoformat(request.endTime).replace(tzinfo=timezone.utc)
+                end_time = parse_local_or_iso_datetime(request.endTime)
         except Exception:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Invalid endTime format. Use HH:MM or ISO format"
             )
+
+    due_date = None
+    if request.dueDate:
+        try:
+            if isinstance(request.dueDate, str):
+                due_date = parse_local_or_iso_datetime(request.dueDate, default_end_of_day=True)
+            else:
+                due_date = request.dueDate
+        except Exception:
+            due_date = request.dueDate
 
     # Determine status
     now = datetime.now(timezone.utc)
@@ -136,11 +185,12 @@ async def create_assignment(
         candidate_id=candidate.id,
         recruiter_id=current_user.id,
         status=status_val,
-        due_date=request.dueDate,
+        due_date=due_date,
         start_time=start_time,
         end_time=end_time,
         instructions=request.instructions
     )
+
     db.add(db_assignment)
 
     # 6. Update candidates_assigned counter
@@ -148,6 +198,13 @@ async def create_assignment(
     
     await db.commit()
     await db.refresh(db_assignment)
+
+    import logging
+    logger = logging.getLogger("recruitai-backend.api.assignment")
+    logger.info(
+        f"Notification sent to candidate {candidate.email}: "
+        f"Assessment '{assessment.name}' is scheduled for {start_time or 'immediate starting'}."
+    )
 
     # Fetch with relations loaded
     res = await db.execute(
@@ -259,14 +316,14 @@ async def list_assignments(
     summary="Get all assignments for current candidate"
 )
 async def get_candidate_assignments(
-    current_user: User = Depends(require_candidate),
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
     """
     Returns list of assignments matching the logged-in candidate's ID.
     """
     await check_and_update_expired_assignments(db)
-    result = await db.execute(
+    query = (
         select(AssessmentAssignment)
         .options(
             joinedload(AssessmentAssignment.assessment),
@@ -274,10 +331,15 @@ async def get_candidate_assignments(
             joinedload(AssessmentAssignment.recruiter),
             joinedload(AssessmentAssignment.result)
         )
-        .where(AssessmentAssignment.candidate_id == current_user.id)
         .order_by(AssessmentAssignment.assigned_at.desc())
     )
+
+    if current_user.role == UserRole.CANDIDATE:
+        query = query.where(AssessmentAssignment.candidate_id == current_user.id)
+
+    result = await db.execute(query)
     return result.scalars().unique().all()
+
 
 @router.get(
     "/{id}",

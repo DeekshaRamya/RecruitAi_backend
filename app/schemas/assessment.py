@@ -79,7 +79,7 @@ class AssessmentGenerateRequest(BaseModel):
 class QuestionResponse(BaseModel):
     subject: str
     topic: str
-    type: str  # MCQ or SCENARIO
+    type: str  # MCQ, SCENARIO, CODING, or PYTHON_CODING
     difficulty: str
     scenario: Optional[str] = None
     question: str
@@ -87,18 +87,27 @@ class QuestionResponse(BaseModel):
     correctAnswer: str
     exampleInput: Optional[str] = None
     exampleOutput: Optional[str] = None
+    inputFormat: Optional[str] = None
+    outputFormat: Optional[str] = None
+    sampleInput: Optional[str] = None
+    sampleOutput: Optional[str] = None
+    hiddenTestCases: Optional[List[dict]] = None
+    marks: Optional[float] = None
+    databaseSchema: Optional[List[str]] = None
+    sampleData: Optional[List[str]] = None
 
     @model_validator(mode="after")
     def validate_scenario_requirements(self) -> "QuestionResponse":
         # Normalize type
         self.type = self.type.upper()
-        if self.type not in {"MCQ", "SCENARIO"}:
-            raise ValueError("Question type must be MCQ or SCENARIO")
+        valid_types = {"MCQ", "SCENARIO", "CODING", "PYTHON_CODING"}
+        if self.type not in valid_types:
+            raise ValueError(f"Question type must be one of {valid_types}")
 
-        if self.type == "SCENARIO":
-            if not self.scenario:
+        if self.type in {"SCENARIO", "CODING", "PYTHON_CODING"}:
+            if self.type == "SCENARIO" and not self.scenario:
                 raise ValueError("Scenario questions must contain a scenario field")
-            # Force options to be None/empty for scenario Q&A
+            # Force options to be None/empty for scenario and coding
             self.options = None
         else:
             # Validate options and correctness for MCQ

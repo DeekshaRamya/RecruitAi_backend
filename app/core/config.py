@@ -23,11 +23,18 @@ class Settings(BaseModel):
     # Frontend redirect
     FRONTEND_URL: str = Field(default_factory=lambda: os.getenv("FRONTEND_URL", "http://localhost:5173"))
 
-    # Azure OpenAI Configuration
     AZURE_OPENAI_ENDPOINT: str = Field(default_factory=lambda: os.getenv("AZURE_OPENAI_ENDPOINT", ""))
     AZURE_OPENAI_API_KEY: str = Field(default_factory=lambda: os.getenv("AZURE_OPENAI_API_KEY", ""))
     AZURE_OPENAI_DEPLOYMENT_NAME: str = Field(default_factory=lambda: os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME", ""))
     AZURE_OPENAI_API_VERSION: str = Field(default_factory=lambda: os.getenv("AZURE_OPENAI_API_VERSION", ""))
 
+    # Python Execution API
+    PYTHON_EXECUTION_API_URL: str = Field(default_factory=lambda: os.getenv("PYTHON_EXECUTION_API_URL", "http://172.176.122.4:5000/run-python"))
+
+    # SQL Execution API
+    SQL_EXECUTION_API_URL: str = Field(default_factory=lambda: os.getenv("SQL_EXECUTION_API_URL", "http://172.176.122.4:5001/execute"))
+
+
 # Global Settings Instance
 settings = Settings()
+

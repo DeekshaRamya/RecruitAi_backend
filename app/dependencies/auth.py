@@ -21,7 +21,7 @@ async def get_current_user(token: str | None = Depends(oauth2_scheme), db: Async
     # Helper to get/create local developer recruiter in the database
     async def get_dev_recruiter():
         result = await db.execute(select(User).where(User.role == UserRole.RECRUITER))
-        recruiter = result.scalar_one_or_none()
+        recruiter = result.scalars().first()
         if not recruiter:
             recruiter = User(
                 full_name="Local Dev Recruiter",
@@ -65,14 +65,15 @@ async def get_current_user(token: str | None = Depends(oauth2_scheme), db: Async
 def require_candidate(current_user: User = Depends(get_current_user)) -> User:
     """
     Dependency that restricts access only to candidates.
-    Raises 403 Forbidden for non-candidates.
+    Allows local dev recruiter in dev mode to support candidate portal testing.
     """
-    if current_user.role != UserRole.CANDIDATE:
+    if current_user.role != UserRole.CANDIDATE and current_user.email != "dev_recruiter@recruitai.local":
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Forbidden: Candidate role required"
         )
     return current_user
+
 
 def require_recruiter(current_user: User = Depends(get_current_user)) -> User:
     """

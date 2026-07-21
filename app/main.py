@@ -75,6 +75,44 @@ async def lifespan(app: FastAPI):
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
         logger.info("CREATE TABLE statements executed successfully.")
+
+        # 3.1 Migration: Run ALTER TABLE commands to add new columns to existing tables if they don't exist
+        logger.info("Running schema migrations (ALTER TABLE)...")
+        async with engine.begin() as conn:
+            await conn.execute(text("ALTER TABLE candidate_answers ADD COLUMN IF NOT EXISTS assessment_id UUID;"))
+            await conn.execute(text("ALTER TABLE candidate_answers ALTER COLUMN question_id TYPE VARCHAR(4000);"))
+            
+            # Backfill assessment_id for existing candidate answers using assignment_id relationships
+            await conn.execute(text("""
+                UPDATE candidate_answers ca
+                SET assessment_id = aa.assessment_id
+                FROM assessment_assignments aa
+                WHERE ca.assignment_id = aa.id AND ca.assessment_id IS NULL;
+            """))
+            
+            # Add foreign key constraint for assessment_id if not present
+            await conn.execute(text("""
+                DO $$
+                BEGIN
+                    IF NOT EXISTS (SELECT 1 FROM information_schema.table_constraints WHERE constraint_name = 'fk_candidate_answers_assessment') THEN
+                        ALTER TABLE candidate_answers ADD CONSTRAINT fk_candidate_answers_assessment FOREIGN KEY (assessment_id) REFERENCES assessments(id) ON DELETE CASCADE;
+                    END IF;
+                END $$;
+            """))
+            
+            await conn.execute(text("ALTER TABLE assessment_results ADD COLUMN IF NOT EXISTS overall_feedback VARCHAR(4000);"))
+            await conn.execute(text("ALTER TABLE assessment_results ADD COLUMN IF NOT EXISTS overall_strengths VARCHAR(4000);"))
+            await conn.execute(text("ALTER TABLE assessment_results ADD COLUMN IF NOT EXISTS overall_weaknesses VARCHAR(4000);"))
+            await conn.execute(text("ALTER TABLE assessment_results ADD COLUMN IF NOT EXISTS hiring_recommendation VARCHAR(255);"))
+            
+            # Coding assessment execution schema columns
+            await conn.execute(text("ALTER TABLE candidate_answers ADD COLUMN IF NOT EXISTS passed_test_cases INTEGER;"))
+            await conn.execute(text("ALTER TABLE candidate_answers ADD COLUMN IF NOT EXISTS failed_test_cases INTEGER;"))
+            await conn.execute(text("ALTER TABLE candidate_answers ADD COLUMN IF NOT EXISTS run_time DOUBLE PRECISION;"))
+            await conn.execute(text("ALTER TABLE candidate_answers ADD COLUMN IF NOT EXISTS code_output VARCHAR(4000);"))
+            await conn.execute(text("ALTER TABLE candidate_answers ADD COLUMN IF NOT EXISTS test_results JSON;"))
+        logger.info("Schema migrations executed successfully.")
+
         
         # 4. Verify table presence
         async with engine.connect() as conn:
@@ -184,6 +222,42 @@ def root():
         "swagger_ui": "/docs",
         "redoc": "/redoc"
     }
+
+@app.post("/run-python", tags=["Python Code Execution"])
+async def root_run_python(payload: dict):
+    """
+    Root level Python Code Execution API endpoint.
+    """
+    from app.services.code_execution_service import CodeExecutionService
+    executor = CodeExecutionService()
+    code = payload.get("code", "")
+    function_name = payload.get("function_name")
+    inputs = payload.get("inputs")
+    input_data = payload.get("input", "")
+    res = executor.run_python(code=code, function_name=function_name, inputs=inputs, input_data=input_data)
+    return res
+
+@app.post("/run-sql", tags=["SQL Code Execution"])
+async def root_run_sql(payload: dict):
+    """
+    Root level SQL Code Execution API endpoint.
+    """
+    from app.services.code_execution_service import CodeExecutionService
+    executor = CodeExecutionService()
+    query = payload.get("query") or payload.get("code") or ""
+    server_type = payload.get("serverType", "sqlserver")
+    credentials = payload.get("credentials")
+    exam_id = payload.get("examId", "exam_123")
+    user_email = payload.get("userEmail", "candidate@example.com")
+    res = executor.run_sql(
+        query=query,
+        server_type=server_type,
+        credentials=credentials,
+        exam_id=exam_id,
+        user_email=user_email
+    )
+    return res
+
 
 # Legacy Redirect Handler mapping /auth/microsoft/callback to support local .env redirect configuration
 @app.get("/auth/microsoft/callback", include_in_schema=False)

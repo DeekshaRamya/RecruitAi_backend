@@ -243,7 +243,12 @@ class CandidateAnswer(Base):
         ForeignKey("users.id", ondelete="CASCADE"),
         nullable=False
     )
-    question_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    question_id: Mapped[str] = mapped_column(String(4000), nullable=False)
+    assessment_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("assessments.id", ondelete="CASCADE"),
+        nullable=False
+    )
     candidate_answer: Mapped[str] = mapped_column(String(4000), nullable=False)
     submitted_time: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
@@ -254,10 +259,21 @@ class CandidateAnswer(Base):
     marks_awarded: Mapped[float] = mapped_column(default=0.0, nullable=False)
     feedback: Mapped[str | None] = mapped_column(String(4000), nullable=True)
     status: Mapped[str] = mapped_column(String(50), default="Incorrect", nullable=False)  # "Correct", "Incorrect", "Partially Correct"
+    similarity_score: Mapped[int | None] = mapped_column(nullable=True)
+    ai_explanation: Mapped[str | None] = mapped_column(String(4000), nullable=True)
+    strengths: Mapped[str | None] = mapped_column(String(4000), nullable=True)
+    missing_points: Mapped[str | None] = mapped_column(String(4000), nullable=True)
+    suggested_improvement: Mapped[str | None] = mapped_column(String(4000), nullable=True)
+    passed_test_cases: Mapped[int | None] = mapped_column(nullable=True)
+    failed_test_cases: Mapped[int | None] = mapped_column(nullable=True)
+    run_time: Mapped[float | None] = mapped_column(nullable=True)
+    code_output: Mapped[str | None] = mapped_column(String(4000), nullable=True)
+    test_results: Mapped[list | None] = mapped_column(JSON, nullable=True)
 
     # Relationships
     assignment = relationship("AssessmentAssignment")
     candidate = relationship("User")
+    assessment = relationship("Assessment")
 
 class AssessmentResult(Base):
     __tablename__ = "assessment_results"
@@ -297,10 +313,15 @@ class AssessmentResult(Base):
         server_default=func.now(),
         nullable=False
     )
+    overall_feedback: Mapped[str | None] = mapped_column(String(4000), nullable=True)
+    overall_strengths: Mapped[str | None] = mapped_column(String(4000), nullable=True)
+    overall_weaknesses: Mapped[str | None] = mapped_column(String(4000), nullable=True)
+    hiring_recommendation: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
     # Relationships
     assignment = relationship("AssessmentAssignment", back_populates="result")
     candidate = relationship("User")
     assessment = relationship("Assessment")
+
 
 

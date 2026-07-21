@@ -1,7 +1,7 @@
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List, Optional
-from pydantic import BaseModel, Field, ConfigDict, EmailStr
+from pydantic import BaseModel, Field, ConfigDict, EmailStr, field_serializer
 from app.schemas.assessment import AssessmentResponse
 
 class AssignmentCreateRequest(BaseModel):
@@ -46,6 +46,14 @@ class AssignmentResponse(BaseModel):
     candidateEmail: Optional[str] = None
     assessmentName: Optional[str] = None
     score: Optional[float] = None
+
+    @field_serializer('assignedAt', 'dueDate', 'startTime', 'endTime', 'createdAt', 'updatedAt')
+    def serialize_dt(self, dt: Optional[datetime], _info):
+        if dt is None:
+            return None
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.isoformat().replace("+00:00", "Z")
 
 class AssignmentListResponse(BaseModel):
     total: int

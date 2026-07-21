@@ -72,6 +72,10 @@ CRITICAL RULES AND CONSTRAINTS (YOU MUST COMPLY WITH ALL RULES):
 4. For Scenario-Based Questions (type: "SCENARIO"):
    - Must contain: "subject", "topic", "type": "SCENARIO", "difficulty", "scenario" (a detailed programming/business/logic scenario context), "question" (the actual task/problem statement for the scenario), "correctAnswer" (the complete expected solution code, query, or text), "exampleInput" (a sample input format or data string), "exampleOutput" (the expected sample output response string).
    - Must NOT have options (set "options" to null or omit the options field).
+   - For SQL scenario questions (where subject is "SQL"), you MUST also generate:
+     - "databaseSchema": an array of SQL DDL CREATE TABLE statements to define the required tables (e.g., ["CREATE TABLE departments (\n    id INT PRIMARY KEY,\n    name VARCHAR(100)\n);", "CREATE TABLE employees (\n    id INT PRIMARY KEY,\n    name VARCHAR(100),\n    salary DECIMAL(10, 2),\n    department_id INT REFERENCES departments(id)\n);"])
+     - "sampleData": an array of SQL INSERT INTO statements to populate the tables with realistic sample data (e.g., ["INSERT INTO departments VALUES (1, 'Engineering');", "INSERT INTO employees VALUES (101, 'Alice', 100000.00, 1);"])
+     For other subjects (like Python or general coding), "databaseSchema" and "sampleData" should be null or omitted.
 5. All generated questions must have the difficulty field set to: "{request.difficulty}".
 6. Do NOT generate duplicate questions. Ensure each question tests a distinct aspect of the topic.
 
@@ -97,7 +101,9 @@ Response Schema:
       "options": null,
       "correctAnswer": "The complete expected code or query solution",
       "exampleInput": "sample input details",
-      "exampleOutput": "sample output details"
+      "exampleOutput": "sample output details",
+      "databaseSchema": ["CREATE TABLE departments (...);", "CREATE TABLE employees (...);"],
+      "sampleData": ["INSERT INTO departments VALUES (...);", "INSERT INTO employees VALUES (...);"]
     }}
   ]
 }}"""
@@ -274,19 +280,31 @@ Candidate's Answer:
 
 CRITICAL RULES AND CONSTRAINTS (YOU MUST COMPLY WITH ALL RULES):
 1. Return ONLY valid JSON. Do NOT wrap the JSON in markdown code blocks like ```json or ```. Return the raw JSON string directly.
-2. Evaluate based on correctness, completeness, technical accuracy, keywords, and logical explanation.
-3. Be fair. Score from 0 to 100.
-4. "status" must be exactly one of: "Correct" (for scores >= 80), "Partially Correct" (for scores between 40 and 79), or "Incorrect" (for scores < 40).
-5. Provide constructive feedback, strengths, and improvements in simple English.
-6. The JSON structure must match the schema below exactly.
+2. Compare the Candidate Answer with the Recruiter's Correct Answer. Do NOT perform only an exact text match; evaluate semantic similarity. Accept answers that have the same meaning even if the wording is different.
+3. Consider:
+   - Correct concepts
+   - Technical accuracy
+   - Completeness
+   - Relevance
+   - Missing important points
+4. Grade the answer on a scale of 0 to 100 in "score".
+5. Set "similarity_score" as the semantic similarity percentage (0-100%).
+6. "status" must be exactly one of: "Correct" (for similarity_score >= 80), "Partially Correct" (for similarity_score between 40 and 79), or "Incorrect" (for similarity_score < 40).
+7. "ai_explanation" must be a constructive evaluation feedback and explanation.
+8. "strengths" must describe what the candidate did well.
+9. "missing_points" must list any missing important points (use "None" if there are none).
+10. "suggested_improvement" must provide actionable suggestions on how to improve.
+11. The JSON structure must match the schema below exactly.
 
 Response Schema:
 {{
-  "score": 85,
+  "similarity_score": 96,
+  "score": 96,
   "status": "Correct",
-  "feedback": "Constructive evaluation feedback.",
-  "strengths": "What the candidate did well.",
-  "improvements": "What could be improved."
+  "ai_explanation": "The candidate understands the concept correctly. The explanation matches the expected answer.",
+  "strengths": "Understands the concept of Virtual DOM and updates.",
+  "missing_points": "None",
+  "suggested_improvement": "Could mention how Virtual DOM minimizes direct browser layout recalculations."
 }}"""
         system_message = (
             "You are an AI assessment evaluator. You must return ONLY a JSON object "
@@ -303,22 +321,106 @@ Response Schema:
             logger.error(f"Failed to decode Azure OpenAI evaluation response as JSON. Raw: {raw_response}. Error: {e}")
             return {
                 "score": 0,
+                "similarity_score": 0,
                 "status": "Incorrect",
-                "feedback": "AI evaluation failed to parse response.",
+                "ai_explanation": "AI evaluation failed to parse response.",
                 "strengths": "None",
-                "improvements": "None"
+                "missing_points": "Could not determine missing points.",
+                "suggested_improvement": "None"
             }
 
         return {
             "score": data.get("score", 0),
+            "similarity_score": data.get("similarity_score", data.get("score", 0)),
             "status": data.get("status", "Incorrect"),
-            "feedback": data.get("feedback", "No feedback provided."),
+            "ai_explanation": data.get("ai_explanation", "No explanation provided."),
             "strengths": data.get("strengths", "No strengths highlighted."),
-            "improvements": data.get("improvements", "No improvement areas identified.")
+            "missing_points": data.get("missing_points", "No missing points highlighted."),
+            "suggested_improvement": data.get("suggested_improvement", "No improvement areas identified.")
         }
 
+    async def generate_overall_evaluation(
+        self,
+        assessment_name: str,
+        total_questions: int,
+        correct_count: int,
+        partial_count: int,
+        incorrect_count: int,
+        final_percentage: float,
+        questions_summary: List[Dict[str, Any]]
+    ) -> Dict[str, Any]:
+        """
+        Generates overall assessment results feedback, strengths, weaknesses, and hiring recommendation.
+        """
+        questions_str = ""
+        for i, q in enumerate(questions_summary):
+            questions_str += f"""
+Question {i+1}: {q.get('question')}
+Candidate Answer: {q.get('candidate_answer')}
+Correct Answer: {q.get('correct_answer')}
+AI Evaluation Status: {q.get('status')}
+Score: {q.get('score')}/100
+"""
+
+        prompt = f"""Generate an overall evaluation summary, strengths, weaknesses, and hiring recommendation for the candidate's completed assessment.
+
+Assessment Name: {assessment_name}
+Total Questions: {total_questions}
+Correct: {correct_count}
+Partially Correct: {partial_count}
+Incorrect: {incorrect_count}
+Final Score: {final_percentage}%
+
+Details of each question:
+{questions_str}
+
+CRITICAL RULES AND CONSTRAINTS (YOU MUST COMPLY WITH ALL RULES):
+1. Return ONLY valid JSON. Do NOT wrap the JSON in markdown code blocks like ```json or ```. Return the raw JSON string directly.
+2. Provide a cohesive, professional hiring manager summary in "overall_feedback".
+3. Identify 2-3 key technical strengths in "overall_strengths".
+4. Identify 1-2 areas of weakness or missing knowledge in "overall_weaknesses".
+5. Provide a clear hiring recommendation in "hiring_recommendation" (e.g. "Recommended for Interview", "Partially Recommended", "Not Recommended").
+6. The JSON structure must match the schema below exactly.
+
+Response Schema:
+{{
+  "overall_feedback": "Cohesive summary of candidate's performance across all questions.",
+  "overall_strengths": "List or paragraph describing candidate's technical strengths.",
+  "overall_weaknesses": "List or paragraph describing candidate's weak areas.",
+  "hiring_recommendation": "Recommended for Interview"
+}}"""
+
+        system_message = (
+            "You are an expert technical recruiter and interviewer. You must return ONLY a JSON object "
+            "matching the requested schema. Do not include any explanation, markdown, "
+            "or code blocks (no ```json or ```). Your response must be clean JSON."
+        )
+
+        try:
+            raw_response = await self.client.generate_chat_completion(prompt, system_message)
+            cleaned_json = self._clean_json(raw_response)
+            data = json.loads(cleaned_json)
+            return {
+                "overall_feedback": data.get("overall_feedback", "No overall feedback provided."),
+                "overall_strengths": data.get("overall_strengths", "No overall strengths identified."),
+                "overall_weaknesses": data.get("overall_weaknesses", "No overall weaknesses identified."),
+                "hiring_recommendation": data.get("hiring_recommendation", "Recommended for Interview")
+            }
+        except Exception as e:
+            logger.error(f"Failed to generate overall evaluation: {e}")
+            return {
+                "overall_feedback": "Successfully completed assessment.",
+                "overall_strengths": "N/A",
+                "overall_weaknesses": "N/A",
+                "hiring_recommendation": "Recommended for Interview" if final_percentage >= 50.0 else "Not Recommended"
+            }
 
 
+    async def analyze_resume(self, resume_text: str) -> Dict[str, Any]:
+        """
+        Analyzes the candidate's resume text using Azure OpenAI.
+        """
+        prompt = f"""Analyze the candidate's resume text:
 
 Resume Text:
 {resume_text}
