@@ -44,6 +44,7 @@ class AssignmentResponse(BaseModel):
     # Extra properties dynamically resolved from relationships
     candidateName: Optional[str] = None
     candidateEmail: Optional[str] = None
+    candidatePhone: Optional[str] = None
     assessmentName: Optional[str] = None
     score: Optional[float] = None
 

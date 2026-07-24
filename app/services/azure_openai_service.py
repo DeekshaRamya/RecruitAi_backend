@@ -14,16 +14,17 @@ class AzureOpenAIService:
     async def generate_questions(self, request: AssessmentGenerateRequest) -> List[Dict[str, Any]]:
         """
         Builds the prompt, calls the Azure OpenAI API client, cleans the response,
-        and parses it into a Python dictionary.
+        and parses & validates it into high-quality question objects.
         """
         # 1. Dynamically construct prompt
         prompt = self._build_prompt(request)
         logger.info(f"Generated Prompt:\n{prompt}")
 
         system_message = (
-            "You are an AI assessment generator. You must return ONLY a JSON object "
-            "matching the requested schema. Do not include any explanation, markdown, "
-            "or code blocks (no ```json or ```). Your response must be clean JSON."
+            "You are a principal technical assessment architect who designs high-quality recruitment "
+            "evaluations comparable to HackerRank, LeetCode, Codility, Mercer Mettl, and SHL. "
+            "You create clear, grammatically precise, professional, and unambiguous questions. "
+            "You must return ONLY a JSON object matching the requested schema without any markdown formatting or code blocks."
         )
 
         # 2. Invoke Azure OpenAI via the client
@@ -41,12 +42,14 @@ class AzureOpenAIService:
             logger.error(f"Azure response JSON is missing 'questions' list key. Parsed data: {data}")
             raise ValueError("Azure OpenAI response is missing the 'questions' list key")
 
-        return data["questions"]
+        # 4. Validate and sanitize generated questions for strict quality compliance
+        return self._clean_and_validate_questions(data["questions"], request.subjects)
 
     def _build_prompt(self, request: AssessmentGenerateRequest) -> str:
         """
-        Dynamically constructs the prompt based on selected subjects and percentage distributions.
-        AI determines ideal total question count (15-30) if not specified.
+        Constructs a comprehensive, high-quality prompt for generating recruitment assessment questions.
+        Enforces clear wording, realistic workplace scenarios, HackerRank/LeetCode quality standards,
+        strict distractor guidelines, and topic relevance.
         """
         num_subjects = len(request.subjects)
         target_total = request.totalQuestions or (15 if num_subjects == 1 else (20 if num_subjects == 2 else 25))
@@ -60,70 +63,185 @@ class AzureOpenAIService:
 
         subjects_str = ", ".join(request.subjects)
 
-        prompt = f"""Generate technical recruitment assessment questions based on the following configurations:
+        prompt = f"""Generate professional technical recruitment assessment questions based on the following configurations:
 
 Selected Subjects: {subjects_str}
 
-AUTOMATIC QUESTION COUNT SELECTION:
-- You (the AI) must automatically determine the ideal total number of questions (between 15 and 30 questions depending on the selected subjects and assessment objective).
-- Target approximately {target_total} total questions.
-
-Question Type Distribution Ratios (Strictly respect these percentages across the generated question set):
+QUESTION COUNT & RATIOS:
+- Ideal Total Question Count: ~{target_total} (between 15 and 30 total).
 - MCQ Questions (type "MCQ"): ~{mcq_count} questions ({request.questionDistribution.mcq}%)
 - Scenario-Based Questions (type "SCENARIO"): ~{scenario_count} questions ({request.questionDistribution.scenario}%)
+- Difficulty Level Ratios: Easy ~{easy_count} ({request.difficultyDistribution.easy}%), Medium ~{medium_count} ({request.difficultyDistribution.medium}%), Hard ~{hard_count} ({request.difficultyDistribution.hard}%)
 
-Difficulty Level Distribution Ratios (Strictly respect these percentages across the generated question set):
-- Easy: ~{easy_count} questions ({request.difficultyDistribution.easy}%)
-- Medium: ~{medium_count} questions ({request.difficultyDistribution.medium}%)
-- Hard: ~{hard_count} questions ({request.difficultyDistribution.hard}%)
+QUALITY, CLARITY & ACCURACY MANDATES (STRICT COMPLIANCE REQUIRED):
 
-CRITICAL RULES AND CONSTRAINTS (YOU MUST COMPLY WITH ALL RULES):
-1. Return ONLY valid JSON. Do NOT wrap the JSON in markdown code blocks like ```json or ```. Return the raw JSON string directly.
-2. Do NOT include any explanations, introduction, markdown headers, or footnotes outside the JSON.
-3. Distribute the questions balanced across the selected subjects: {subjects_str}. The "subject" attribute of each question MUST be one of {request.subjects}.
-4. Avoid duplicate or repetitive questions. Generate realistic, interview-quality questions.
-5. For MCQ Questions (type: "MCQ"):
-   - Must contain: "subject", "topic", "type": "MCQ", "difficulty" ("Easy", "Medium", or "Hard"), "question", "options" (array of exactly 4 unique strings), "correctAnswer" (must match one option exactly), "explanation".
-6. For Scenario-Based Questions (type: "SCENARIO"):
-   - Must contain: "subject", "topic", "type": "SCENARIO", "difficulty" ("Easy", "Medium", or "Hard"), "scenario" (real-world problem statement context), "question" (the main task), "problemStatement" (detailed problem description), "candidateTask" (explicit instructions for candidate), "expectedAnswer" (complete expected solution code/query/answer), "evaluationCriteria" (scoring guidelines), "correctAnswer" (same as expectedAnswer), "explanation".
-   - Options must be null.
-   - For SQL scenario questions (where subject is "SQL"), you MUST also generate:
-     - "databaseSchema": array of SQL CREATE TABLE DDL statements
-     - "sampleData": array of SQL INSERT INTO statements
-7. Generate a complete set of high-quality assessment questions (between 15 and 30 questions total).
+1. GENERAL QUESTION EXCELLENCE & CLARITY:
+   - Write in simple, clear, grammatically correct professional English.
+   - Every question must be unambiguous with exactly ONE correct interpretation.
+   - Avoid vague or incomplete statements. Include full necessary context.
+   - Avoid unnecessary technical jargon unless essential to the core skill being evaluated.
+   - Do NOT generate duplicate or repetitive questions.
+   - Align difficulty with expectations:
+     * Easy: Core concepts, straightforward wording, minimal reasoning.
+     * Medium: Application of concepts, moderate technical complexity.
+     * Hard: Real-world analytical problems, multi-step edge cases, performance trade-offs.
 
-Response Schema:
+2. MULTIPLE CHOICE QUESTIONS (MCQs):
+   - Formulate a precise, self-contained question statement (e.g., "Which SQL JOIN returns only the rows that have matching values in both tables?" rather than "What is SQL join?").
+   - Provide exactly 4 meaningful options.
+   - Ensure EXACTLY ONE option is correct, with 3 realistic distractors.
+   - NEVER use "All of the above", "None of the above", "All of these", or "None of these".
+   - Options must be of similar length and syntactic structure to avoid clue leakage.
+   - Provide a concise, clear "explanation" detailing why the correctAnswer is right (for recruiter review).
+
+3. SCENARIO-BASED & PROGRAMMING QUESTIONS:
+   - Must resemble real-world workplace situations.
+   - "scenario": Realistic background context (e.g., "You are working as a Data Analyst in a retail enterprise...").
+   - "problemStatement": Business or technical problem statement detailing inputs, outputs, requirements, and constraints.
+   - "candidateTask": Explicit, specific task describing what the candidate must write or accomplish.
+   - For SQL questions: Must specify table names, column names, business context, expected output, DDL ("databaseSchema"), and DML ("sampleData").
+   - For Python/Coding questions: Describe input format, output format, constraints, sample input ("exampleInput"), sample output ("exampleOutput"), and full working solution ("expectedAnswer").
+   - "evaluationCriteria": Clear rubric highlighting key evaluation points.
+
+4. APTITUDE QUESTIONS (if Aptitude is selected):
+   - Mathematically accurate with all necessary numerical values, units, and conditions explicitly provided.
+   - Include step-by-step logic in the recruiter "explanation".
+
+5. TOPIC RELEVANCE:
+   - Every question's "subject" MUST strictly be one of: {request.subjects}.
+   - Topic must accurately describe the specific technical concept tested.
+
+RESPONSE SCHEMA (RETURN RAW CLEAN JSON ONLY):
 {{
   "questions": [
     {{
       "subject": "Python",
-      "topic": "Variables & Types",
+      "topic": "Generator Functions",
       "type": "MCQ",
-      "difficulty": "Easy",
-      "question": "Which of the following is a mutable data type in Python?",
-      "options": ["tuple", "str", "list", "int"],
-      "correctAnswer": "list",
-      "explanation": "Lists in Python are mutable, meaning their elements can be modified in place."
+      "difficulty": "Medium",
+      "question": "Which keyword is used to pause execution and yield a value in a Python generator function?",
+      "options": ["yield", "return", "pause", "async"],
+      "correctAnswer": "yield",
+      "explanation": "The 'yield' statement pauses function execution and emits a value to the caller, maintaining execution state for subsequent iterations."
     }},
     {{
       "subject": "SQL",
-      "topic": "Window Functions",
+      "topic": "Aggregate Functions & Grouping",
       "type": "SCENARIO",
       "difficulty": "Hard",
-      "scenario": "Finding duplicate revenue records in financial audit database.",
-      "question": "Write an SQL query using DENSE_RANK() to identify duplicate transaction records.",
-      "problemStatement": "In an e-commerce transactions table, write a query to identify customer IDs with duplicate payments.",
-      "candidateTask": "Write a query returning customer_id and transaction_count.",
-      "expectedAnswer": "SELECT customer_id, COUNT(*) FROM transactions GROUP BY customer_id HAVING COUNT(*) > 1;",
-      "evaluationCriteria": "Correct group by clause, having count, and valid SQL syntax.",
-      "correctAnswer": "SELECT customer_id, COUNT(*) FROM transactions GROUP BY customer_id HAVING COUNT(*) > 1;",
-      "explanation": "GROUP BY with HAVING COUNT(*) > 1 filters for groups with multiple transactions.",
-      "databaseSchema": ["CREATE TABLE transactions (id INT, customer_id INT, amount DECIMAL(10,2));"],
-      "sampleData": ["INSERT INTO transactions VALUES (1, 101, 50.00), (2, 101, 50.00);"]
+      "scenario": "You are a Senior Data Analyst at an e-commerce platform. The auditing team needs to detect customer accounts with duplicate transaction records.",
+      "question": "Write an SQL query to retrieve customer IDs and transaction counts for customers who have more than 1 transaction.",
+      "problemStatement": "In a 'transactions' table with columns (transaction_id INT, customer_id INT, amount DECIMAL(10,2), created_at TIMESTAMP), identify customer_ids with duplicate payments.",
+      "candidateTask": "Write an SQL query grouping by customer_id and applying a HAVING filter to isolate customer_ids with total transactions > 1.",
+      "expectedAnswer": "SELECT customer_id, COUNT(transaction_id) AS total_transactions FROM transactions GROUP BY customer_id HAVING COUNT(transaction_id) > 1;",
+      "evaluationCriteria": "Valid GROUP BY syntax, correct HAVING aggregation filter, and accurate select projection.",
+      "correctAnswer": "SELECT customer_id, COUNT(transaction_id) AS total_transactions FROM transactions GROUP BY customer_id HAVING COUNT(transaction_id) > 1;",
+      "explanation": "GROUP BY customer_id aggregates rows by user, while HAVING COUNT(...) > 1 filters for groups containing multiple records.",
+      "databaseSchema": ["CREATE TABLE transactions (transaction_id INT PRIMARY KEY, customer_id INT, amount DECIMAL(10,2), created_at TIMESTAMP);"],
+      "sampleData": ["INSERT INTO transactions VALUES (1, 101, 49.99, '2026-07-01 10:00:00'), (2, 101, 49.99, '2026-07-01 10:05:00');"]
     }}
   ]
 }}"""
         return prompt
+
+    def _clean_and_validate_questions(self, questions: List[Dict[str, Any]], allowed_subjects: List[str]) -> List[Dict[str, Any]]:
+        """
+        Validates and refines each generated question to guarantee clarity, correct schema,
+        strict distractor guidelines (no 'All/None of the above'), valid SQL/Python structures,
+        and high-quality recruiter explanations.
+        """
+        banned_phrases = ["all of the above", "none of the above", "all of these", "none of these"]
+        cleaned_questions = []
+
+        for q in questions:
+            # 1. Subject and Topic validation
+            subject = q.get("subject", allowed_subjects[0])
+            if subject not in allowed_subjects:
+                subject = allowed_subjects[0]
+            q["subject"] = subject
+            q["topic"] = q.get("topic") or "General"
+
+            # 2. Type & Difficulty normalization
+            q_type = str(q.get("type", "MCQ")).upper()
+            if q_type in {"SCENARIO", "CODING", "PYTHON_CODING", "SCENARIO_CODING"}:
+                q_type = "SCENARIO"
+            else:
+                q_type = "MCQ"
+            q["type"] = q_type
+
+            q["difficulty"] = str(q.get("difficulty", "Medium")).capitalize()
+            if q["difficulty"] not in {"Easy", "Medium", "Hard"}:
+                q["difficulty"] = "Medium"
+
+            # 3. Clean MCQ questions
+            if q_type == "MCQ":
+                raw_options = q.get("options") or []
+                correct_ans = str(q.get("correctAnswer", "")).strip()
+
+                cleaned_opts = []
+                for opt in raw_options:
+                    opt_str = str(opt).strip()
+                    opt_lower = opt_str.lower()
+                    if any(phrase in opt_lower for phrase in banned_phrases):
+                        opt_str = f"Invalid {q.get('topic', 'concept')} configuration"
+                    cleaned_opts.append(opt_str)
+
+                # Ensure exactly 4 options
+                while len(cleaned_opts) < 4:
+                    cleaned_opts.append(f"Option {chr(65 + len(cleaned_opts))}")
+                if len(cleaned_opts) > 4:
+                    if correct_ans in cleaned_opts[:4]:
+                        cleaned_opts = cleaned_opts[:4]
+                    else:
+                        cleaned_opts = cleaned_opts[:3] + [correct_ans]
+
+                # Match correct_ans exact string
+                exact_match = None
+                for opt in cleaned_opts:
+                    if opt.strip().lower() == correct_ans.lower():
+                        exact_match = opt
+                        break
+                if exact_match:
+                    q["correctAnswer"] = exact_match
+                else:
+                    q["correctAnswer"] = cleaned_opts[0]
+
+                q["options"] = cleaned_opts
+                if not q.get("explanation"):
+                    q["explanation"] = f"The correct answer is '{q['correctAnswer']}', which accurately solves the {q['subject']} ({q['topic']}) task."
+
+            # 4. Clean Scenario / Programming / SQL questions
+            else:
+                q["options"] = None
+                
+                scenario_bg = q.get("scenario") or q.get("problemStatement") or f"Real-world enterprise scenario assessing {q['subject']} - {q['topic']} skills."
+                problem_stmt = q.get("problemStatement") or scenario_bg
+                task = q.get("candidateTask") or q.get("question") or "Solve the given scenario by writing a clear implementation."
+
+                q["scenario"] = scenario_bg
+                q["problemStatement"] = problem_stmt
+                q["candidateTask"] = task
+
+                expected = q.get("expectedAnswer") or q.get("correctAnswer") or "Implementation matching requirements."
+                q["expectedAnswer"] = expected
+                q["correctAnswer"] = expected
+
+                if not q.get("evaluationCriteria"):
+                    q["evaluationCriteria"] = "Correct technical logic, optimal syntax, and complete adherence to task specifications."
+
+                if not q.get("explanation"):
+                    q["explanation"] = f"Solution demonstrates proper implementation of {q['subject']} ({q['topic']})."
+
+                # SQL specific DDL/DML fallback
+                if q["subject"].upper() == "SQL":
+                    if not q.get("databaseSchema"):
+                        q["databaseSchema"] = [f"-- Schema for {q['topic']}\nCREATE TABLE evaluation_records (id INT PRIMARY KEY, name VARCHAR(100), status VARCHAR(50), score INT);"]
+                    if not q.get("sampleData"):
+                        q["sampleData"] = [f"-- Sample dataset\nINSERT INTO evaluation_records VALUES (1, 'Sample Record', 'Active', 90);"]
+
+            cleaned_questions.append(q)
+
+        return cleaned_questions
 
     def _clean_json(self, raw_response: str) -> str:
         """

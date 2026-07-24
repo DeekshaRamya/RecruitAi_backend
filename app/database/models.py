@@ -210,6 +210,10 @@ class AssessmentAssignment(Base):
         return self.candidate.email if self.candidate else ""
 
     @property
+    def candidatePhone(self) -> str | None:
+        return self.candidate.phone if (self.candidate and hasattr(self.candidate, 'phone')) else None
+
+    @property
     def assessmentName(self) -> str:
         return self.assessment.name if self.assessment else ""
 
