@@ -115,6 +115,11 @@ async def download_candidate_resume(
 from app.database.models import UserRole
 from app.schemas.recruiter import CandidateDetailResponse
 
+from pydantic import BaseModel
+
+class BulkDeleteCandidatesRequest(BaseModel):
+    candidateIds: List[uuid.UUID]
+
 candidates_router = APIRouter(prefix="/api/candidates", tags=["Candidates"])
 
 @candidates_router.get(
@@ -134,3 +139,58 @@ async def get_all_candidates(
     )
     candidates = result.scalars().all()
     return candidates
+
+
+@candidates_router.delete(
+    "/{candidate_id}",
+    summary="Delete a Candidate",
+    status_code=status.HTTP_200_OK
+)
+async def delete_candidate(
+    candidate_id: uuid.UUID,
+    current_user: User = Depends(require_recruiter),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Deletes a candidate by ID along with their associated assessment records. Access restricted to Recruiters.
+    """
+    result = await db.execute(select(User).where(User.id == candidate_id, User.role == UserRole.CANDIDATE))
+    candidate = result.scalar_one_or_none()
+    
+    if not candidate:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Candidate not found"
+        )
+        
+    await db.delete(candidate)
+    await db.commit()
+    return {"message": "Candidate deleted successfully", "id": str(candidate_id)}
+
+
+@candidates_router.delete(
+    "",
+    summary="Bulk Delete Candidates",
+    status_code=status.HTTP_200_OK
+)
+async def bulk_delete_candidates(
+    request: BulkDeleteCandidatesRequest,
+    current_user: User = Depends(require_recruiter),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Deletes multiple candidates by IDs. Access restricted to Recruiters.
+    """
+    if not request.candidateIds:
+        return {"message": "No candidates specified for deletion", "deletedCount": 0}
+        
+    result = await db.execute(select(User).where(User.id.in_(request.candidateIds), User.role == UserRole.CANDIDATE))
+    candidates = result.scalars().all()
+    
+    deleted_count = 0
+    for cand in candidates:
+        await db.delete(cand)
+        deleted_count += 1
+        
+    await db.commit()
+    return {"message": f"Successfully deleted {deleted_count} candidates", "deletedCount": deleted_count}
