@@ -15,6 +15,10 @@ class AssessmentSubmitRequest(BaseModel):
     assignmentId: uuid.UUID
     answers: List[AnswerSubmit]
     timeTaken: int  # in seconds
+    autoSubmitted: Optional[bool] = False
+    submissionReason: Optional[str] = None
+    warningCount: Optional[int] = 0
+    warningHistory: Optional[List[str]] = None
 
 class QuestionAnalysis(BaseModel):
     questionId: str
@@ -58,6 +62,13 @@ class AssessmentResultResponse(BaseModel):
     passFail: str
     timeTaken: int
     createdAt: datetime
+    
+    # Auto submission & proctoring fields
+    autoSubmitted: Optional[bool] = False
+    submissionReason: Optional[str] = None
+    warningCount: Optional[int] = 0
+    warningHistory: Optional[List[str]] = None
+    submissionType: Optional[str] = "Manual"
     
     # Extra metadata for full result view
     candidateName: Optional[str] = None

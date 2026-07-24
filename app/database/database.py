@@ -8,11 +8,14 @@ logger = logging.getLogger("recruitai-backend")
 # Primary Database connection URL (typically PostgreSQL)
 db_url = settings.DATABASE_URL
 
-# Primary PostgreSQL Engine with pool pre-ping and a 3-second connection timeout
+# Primary PostgreSQL Engine with pool pre-ping, recycling, and a 30-second connection timeout
 engine = create_async_engine(
     db_url,
     pool_pre_ping=True,
-    connect_args={"connect_timeout": 3} if db_url.startswith("postgresql") else {}
+    pool_recycle=1800,
+    pool_size=10,
+    max_overflow=20,
+    connect_args={"connect_timeout": 30} if db_url.startswith("postgresql") else {}
 )
 
 # Async Session factory bound to PostgreSQL

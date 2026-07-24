@@ -497,13 +497,13 @@ async def submit_assessment(
             else:
                 eval_res = ai_evals.get(q_id_str)
                 if eval_res:
-                    score = eval_res["score"]  # 0 to 100
-                    similarity_score = eval_res["similarity_score"]
-                    status_val = eval_res["status"]  # "Correct", "Partially Correct", "Incorrect"
-                    feedback = eval_res["ai_explanation"]
-                    strengths = eval_res["strengths"]
-                    missing_points = eval_res["missing_points"]
-                    suggested_improvement = eval_res["suggested_improvement"]
+                    score = eval_res.get("score", 0)  # 0 to 100
+                    similarity_score = eval_res.get("similarity_score", score)
+                    status_val = eval_res.get("status", "Incorrect")  # "Correct", "Partially Correct", "Incorrect"
+                    feedback = eval_res.get("ai_explanation", eval_res.get("feedback", ""))
+                    strengths = eval_res.get("strengths", "")
+                    missing_points = eval_res.get("missing_points", "")
+                    suggested_improvement = eval_res.get("suggested_improvement", eval_res.get("improvements", ""))
                     
                     # Convert score from 0-100 to 0-10 marks
                     marks_awarded = float(score) / 10.0
@@ -589,7 +589,11 @@ async def submit_assessment(
         overall_feedback=overall_eval["overall_feedback"],
         overall_strengths=overall_eval["overall_strengths"],
         overall_weaknesses=overall_eval["overall_weaknesses"],
-        hiring_recommendation=overall_eval["hiring_recommendation"]
+        hiring_recommendation=overall_eval["hiring_recommendation"],
+        auto_submitted=request.autoSubmitted or False,
+        submission_reason=request.submissionReason,
+        warning_count=request.warningCount or 0,
+        warning_history=request.warningHistory or []
     )
 
     # Update assignment status
@@ -665,6 +669,11 @@ async def submit_assessment(
         passFail=res_obj.pass_fail,
         timeTaken=res_obj.time_taken,
         createdAt=res_obj.created_at,
+        autoSubmitted=res_obj.auto_submitted or False,
+        submissionReason=res_obj.submission_reason,
+        warningCount=res_obj.warning_count or 0,
+        warningHistory=res_obj.warning_history or [],
+        submissionType="Automatic" if res_obj.auto_submitted else "Manual",
         candidateName=res_obj.candidate.full_name,
         candidateEmail=res_obj.candidate.email,
         assessmentName=res_obj.assessment.name,
@@ -802,13 +811,13 @@ async def evaluate_assignment(
             else:
                 eval_res = ai_evals.get(q_id_str)
                 if eval_res:
-                    score = eval_res["score"]
-                    similarity_score = eval_res["similarity_score"]
-                    status_val = eval_res["status"]
-                    feedback = eval_res["ai_explanation"]
-                    strengths = eval_res["strengths"]
-                    missing_points = eval_res["missing_points"]
-                    suggested_improvement = eval_res["suggested_improvement"]
+                    score = eval_res.get("score", 0)
+                    similarity_score = eval_res.get("similarity_score", score)
+                    status_val = eval_res.get("status", "Incorrect")
+                    feedback = eval_res.get("ai_explanation", eval_res.get("feedback", ""))
+                    strengths = eval_res.get("strengths", "")
+                    missing_points = eval_res.get("missing_points", "")
+                    suggested_improvement = eval_res.get("suggested_improvement", eval_res.get("improvements", ""))
                     marks_awarded = float(score) / 10.0
                     
                     if status_val == "Correct":
@@ -1105,6 +1114,11 @@ async def get_result(
         passFail=res_obj.pass_fail,
         timeTaken=res_obj.time_taken,
         createdAt=res_obj.created_at,
+        autoSubmitted=res_obj.auto_submitted or False,
+        submissionReason=res_obj.submission_reason,
+        warningCount=res_obj.warning_count or 0,
+        warningHistory=res_obj.warning_history or [],
+        submissionType="Automatic" if res_obj.auto_submitted else "Manual",
         candidateName=res_obj.candidate.full_name,
         candidateEmail=res_obj.candidate.email,
         assessmentName=res_obj.assignment.assessment.name,
@@ -1156,6 +1170,11 @@ async def get_candidate_results(
                 passFail=res_obj.pass_fail,
                 timeTaken=res_obj.time_taken,
                 createdAt=res_obj.created_at,
+                autoSubmitted=res_obj.auto_submitted or False,
+                submissionReason=res_obj.submission_reason,
+                warningCount=res_obj.warning_count or 0,
+                warningHistory=res_obj.warning_history or [],
+                submissionType="Automatic" if res_obj.auto_submitted else "Manual",
                 candidateName=res_obj.candidate.full_name,
                 candidateEmail=res_obj.candidate.email,
                 assessmentName=res_obj.assignment.assessment.name,
@@ -1211,6 +1230,11 @@ async def get_recruiter_results(
                 passFail=res_obj.pass_fail,
                 timeTaken=res_obj.time_taken,
                 createdAt=res_obj.created_at,
+                autoSubmitted=res_obj.auto_submitted or False,
+                submissionReason=res_obj.submission_reason,
+                warningCount=res_obj.warning_count or 0,
+                warningHistory=res_obj.warning_history or [],
+                submissionType="Automatic" if res_obj.auto_submitted else "Manual",
                 candidateName=res_obj.candidate.full_name,
                 candidateEmail=res_obj.candidate.email,
                 assessmentName=res_obj.assignment.assessment.name,

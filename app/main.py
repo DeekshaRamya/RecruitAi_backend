@@ -104,6 +104,10 @@ async def lifespan(app: FastAPI):
             await conn.execute(text("ALTER TABLE assessment_results ADD COLUMN IF NOT EXISTS overall_strengths VARCHAR(4000);"))
             await conn.execute(text("ALTER TABLE assessment_results ADD COLUMN IF NOT EXISTS overall_weaknesses VARCHAR(4000);"))
             await conn.execute(text("ALTER TABLE assessment_results ADD COLUMN IF NOT EXISTS hiring_recommendation VARCHAR(255);"))
+            await conn.execute(text("ALTER TABLE assessment_results ADD COLUMN IF NOT EXISTS auto_submitted BOOLEAN DEFAULT FALSE;"))
+            await conn.execute(text("ALTER TABLE assessment_results ADD COLUMN IF NOT EXISTS submission_reason VARCHAR(1000);"))
+            await conn.execute(text("ALTER TABLE assessment_results ADD COLUMN IF NOT EXISTS warning_count INTEGER DEFAULT 0;"))
+            await conn.execute(text("ALTER TABLE assessment_results ADD COLUMN IF NOT EXISTS warning_history JSON;"))
             
             # Coding assessment execution schema columns
             await conn.execute(text("ALTER TABLE candidate_answers ADD COLUMN IF NOT EXISTS passed_test_cases INTEGER;"))

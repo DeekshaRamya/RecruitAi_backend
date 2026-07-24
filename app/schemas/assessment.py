@@ -2,140 +2,95 @@ from typing import List, Optional
 import uuid
 from pydantic import BaseModel, Field, model_validator, field_validator, ConfigDict
 
-class TopicConfig(BaseModel):
-    name: str = Field(..., description="Name of the topic")
-    mcqCount: int = Field(..., ge=0, description="Number of MCQ questions to generate")
-    scenarioCount: int = Field(..., ge=0, description="Number of Scenario-based questions to generate")
+class QuestionDistribution(BaseModel):
+    mcq: int = Field(..., ge=0, le=100, description="Percentage of MCQ questions")
+    scenario: int = Field(..., ge=0, le=100, description="Percentage of Scenario questions")
 
-    @field_validator("name")
-    @classmethod
-    def name_must_not_be_empty(cls, v: str) -> str:
-        if not v.strip():
-            raise ValueError("Topic name cannot be empty")
-        return v.strip()
+    @model_validator(mode="after")
+    def validate_sum(self) -> "QuestionDistribution":
+        if self.mcq + self.scenario != 100:
+            raise ValueError("MCQ percentage and Scenario percentage must sum to 100%")
+        return self
 
-class SubjectConfig(BaseModel):
-    name: str = Field(..., description="Name of the subject")
-    topics: List[TopicConfig] = Field(..., description="List of topics for the subject")
+class DifficultyDistribution(BaseModel):
+    easy: int = Field(..., ge=0, le=100, description="Percentage of Easy questions")
+    medium: int = Field(..., ge=0, le=100, description="Percentage of Medium questions")
+    hard: int = Field(..., ge=0, le=100, description="Percentage of Hard questions")
 
-    @field_validator("name")
-    @classmethod
-    def name_must_not_be_empty(cls, v: str) -> str:
-        if not v.strip():
-            raise ValueError("Subject name cannot be empty")
-        return v.strip()
-
-    @field_validator("topics")
-    @classmethod
-    def must_have_topics(cls, v: List[TopicConfig]) -> List[TopicConfig]:
-        if not v:
-            raise ValueError("Every subject must contain at least one topic")
-        return v
+    @model_validator(mode="after")
+    def validate_sum(self) -> "DifficultyDistribution":
+        if self.easy + self.medium + self.hard != 100:
+            raise ValueError("Easy, Medium, and Hard percentages must sum to 100%")
+        return self
 
 class AssessmentGenerateRequest(BaseModel):
-    subjects: List[SubjectConfig] = Field(..., description="List of subjects and their topics")
-    difficulty: str = Field(..., description="Difficulty level (Easy, Medium, Hard)")
-    duration: int = Field(..., gt=0, description="Duration of the assessment in minutes")
-
-    @field_validator("duration", mode="before")
-    @classmethod
-    def validate_duration_pre(cls, v):
-        if isinstance(v, str):
-            # Extract digits from the string (e.g., "60 minutes" -> 60)
-            digits = "".join(filter(str.isdigit, v))
-            if digits:
-                return int(digits)
-            raise ValueError(f"Could not parse duration: '{v}'")
-        return v
+    title: Optional[str] = Field(default=None, description="Title of the assessment")
+    subjects: List[str] = Field(..., description="List of subjects (Python, SQL, Aptitude)")
+    totalQuestions: Optional[int] = Field(default=None, description="Optional total questions count. If omitted, AI will determine ideal count (15-30).")
+    questionDistribution: QuestionDistribution
+    difficultyDistribution: DifficultyDistribution
+    duration: Optional[str] = Field(default="60 minutes", description="Duration of assessment")
 
     @field_validator("subjects")
     @classmethod
-    def must_have_subjects(cls, v: List[SubjectConfig]) -> List[SubjectConfig]:
+    def validate_subjects(cls, v: List[str]) -> List[str]:
         if not v:
-            raise ValueError("At least one subject must be provided")
-        return v
-
-    @field_validator("difficulty")
-    @classmethod
-    def validate_difficulty(cls, v: str) -> str:
-        valid_difficulties = {"Easy", "Medium", "Hard"}
-        cleaned = v.strip().title()
-        if cleaned not in valid_difficulties:
-            raise ValueError(f"Difficulty must be one of {list(valid_difficulties)}")
+            raise ValueError("At least one subject must be selected")
+        valid_subjects = {"Python", "SQL", "Aptitude"}
+        cleaned = [s.strip() for s in v if s.strip()]
+        if not cleaned:
+            raise ValueError("At least one valid subject must be selected")
+        for s in cleaned:
+            if s not in valid_subjects:
+                raise ValueError(f"Subject '{s}' is invalid. Allowed: Python, SQL, Aptitude")
         return cleaned
-
-    @model_validator(mode="after")
-    def validate_total_questions(self) -> "AssessmentGenerateRequest":
-        total_questions = 0
-        for subject in self.subjects:
-            for topic in subject.topics:
-                total_questions += topic.mcqCount + topic.scenarioCount
-        
-        if total_questions <= 0:
-            raise ValueError("Total question count (MCQ + Scenario) must be greater than 0")
-        
-        return self
 
 class QuestionResponse(BaseModel):
     subject: str
-    topic: str
-    type: str  # MCQ, SCENARIO, CODING, or PYTHON_CODING
+    topic: Optional[str] = "General"
+    type: str  # MCQ or SCENARIO
     difficulty: str
     scenario: Optional[str] = None
     question: str
     options: Optional[List[str]] = Field(default=None)
     correctAnswer: str
+    explanation: Optional[str] = None
+    problemStatement: Optional[str] = None
+    candidateTask: Optional[str] = None
+    expectedAnswer: Optional[str] = None
+    evaluationCriteria: Optional[str] = None
     exampleInput: Optional[str] = None
     exampleOutput: Optional[str] = None
-    inputFormat: Optional[str] = None
-    outputFormat: Optional[str] = None
-    sampleInput: Optional[str] = None
-    sampleOutput: Optional[str] = None
-    hiddenTestCases: Optional[List[dict]] = None
-    marks: Optional[float] = None
     databaseSchema: Optional[List[str]] = None
     sampleData: Optional[List[str]] = None
 
     @model_validator(mode="after")
-    def validate_scenario_requirements(self) -> "QuestionResponse":
-        # Normalize type
+    def validate_question_type(self) -> "QuestionResponse":
         self.type = self.type.upper()
-        valid_types = {"MCQ", "SCENARIO", "CODING", "PYTHON_CODING"}
+        valid_types = {"MCQ", "SCENARIO", "CODING", "PYTHON_CODING", "SCENARIO_CODING"}
         if self.type not in valid_types:
             raise ValueError(f"Question type must be one of {valid_types}")
 
-        if self.type in {"SCENARIO", "CODING", "PYTHON_CODING"}:
-            if self.type == "SCENARIO" and not self.scenario:
-                raise ValueError("Scenario questions must contain a scenario field")
-            # Force options to be None/empty for scenario and coding
+        if self.type in {"SCENARIO", "CODING", "PYTHON_CODING", "SCENARIO_CODING"}:
+            # Normalize type to SCENARIO
+            self.type = "SCENARIO"
             self.options = None
+            if not self.scenario and self.problemStatement:
+                self.scenario = self.problemStatement
+            if not self.expectedAnswer and self.correctAnswer:
+                self.expectedAnswer = self.correctAnswer
+            if not self.correctAnswer and self.expectedAnswer:
+                self.correctAnswer = self.expectedAnswer
         else:
-            # Validate options and correctness for MCQ
-            if not self.options:
-                raise ValueError("Options list is required for MCQ questions")
-            if len(self.options) != 4:
-                raise ValueError("Options list must contain exactly four items")
-            for opt in self.options:
-                if not opt or not opt.strip():
-                    raise ValueError("Options cannot be empty strings")
-                
-            # Check for duplicate options
-            if len(set(opt.strip() for opt in self.options)) != 4:
-                raise ValueError("Options list must contain exactly four unique options (no duplicates)")
-                
-            # Validate correctAnswer is one of the options
+            self.type = "MCQ"
+            if not self.options or len(self.options) != 4:
+                # If options missing or not 4 items, default fallback format
+                if not self.options:
+                    self.options = ["Option A", "Option B", "Option C", "Option D"]
             if self.correctAnswer not in self.options:
-                # Try to strip spaces to see if they match
-                stripped_correct = self.correctAnswer.strip()
-                matched = False
-                for opt in self.options:
-                    if opt.strip() == stripped_correct:
-                        self.correctAnswer = opt
-                        matched = True
-                        break
-                if not matched:
-                    raise ValueError(f"Correct answer '{self.correctAnswer}' must match one of the options: {self.options}")
-            
+                if self.options:
+                    self.correctAnswer = self.options[0]
+
         return self
 
 class AssessmentGenerateResponse(BaseModel):
@@ -175,4 +130,3 @@ class AssessmentUpdateRequest(BaseModel):
     duration: Optional[str] = None
     questionsCount: Optional[int] = None
     questions: Optional[List[dict]] = None
-

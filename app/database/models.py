@@ -317,6 +317,10 @@ class AssessmentResult(Base):
     overall_strengths: Mapped[str | None] = mapped_column(String(4000), nullable=True)
     overall_weaknesses: Mapped[str | None] = mapped_column(String(4000), nullable=True)
     hiring_recommendation: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    auto_submitted: Mapped[bool | None] = mapped_column(default=False, nullable=True)
+    submission_reason: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    warning_count: Mapped[int | None] = mapped_column(default=0, nullable=True)
+    warning_history: Mapped[list | None] = mapped_column(JSON, nullable=True)
 
     # Relationships
     assignment = relationship("AssessmentAssignment", back_populates="result")

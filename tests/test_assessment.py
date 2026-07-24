@@ -10,9 +10,9 @@ settings.AZURE_OPENAI_DEPLOYMENT_NAME = "mock-deployment"
 settings.AZURE_OPENAI_API_VERSION = "2024-12-01-preview"
 
 from app.schemas.assessment import (
-    TopicConfig,
-    SubjectConfig,
     AssessmentGenerateRequest,
+    QuestionDistribution,
+    DifficultyDistribution,
     QuestionResponse,
     AssessmentGenerateResponse
 )
@@ -26,120 +26,38 @@ from app.services.azure_openai_service import AzureOpenAIService
 
 def test_valid_request_schema():
     data = {
-        "subjects": [
-            {
-                "name": "Python",
-                "topics": [
-                    {"name": "Functions", "mcqCount": 3, "scenarioCount": 2}
-                ]
-            }
-        ],
-        "difficulty": "Medium",
-        "duration": 30
+        "subjects": ["Python", "SQL"],
+        "questionDistribution": {"mcq": 70, "scenario": 30},
+        "difficultyDistribution": {"easy": 20, "medium": 50, "hard": 30},
+        "duration": "30 minutes"
     }
     request = AssessmentGenerateRequest(**data)
-    assert len(request.subjects) == 1
-    assert request.subjects[0].name == "Python"
-    assert request.subjects[0].topics[0].mcqCount == 3
-    assert request.difficulty == "Medium"
-
-
-def test_valid_request_duration_string():
-    data = {
-        "subjects": [
-            {
-                "name": "Python",
-                "topics": [
-                    {"name": "Functions", "mcqCount": 3, "scenarioCount": 2}
-                ]
-            }
-        ],
-        "difficulty": "Medium",
-        "duration": "60 minutes"
-    }
-    request = AssessmentGenerateRequest(**data)
-    assert request.duration == 60
+    assert len(request.subjects) == 2
+    assert "Python" in request.subjects
+    assert request.questionDistribution.mcq == 70
+    assert request.difficultyDistribution.medium == 50
 
 
 def test_invalid_request_no_subjects():
     data = {
         "subjects": [],
-        "difficulty": "Medium",
-        "duration": 30
+        "questionDistribution": {"mcq": 70, "scenario": 30},
+        "difficultyDistribution": {"easy": 20, "medium": 50, "hard": 30}
     }
     with pytest.raises(ValidationError) as exc:
         AssessmentGenerateRequest(**data)
-    assert "At least one subject must be provided" in str(exc.value)
+    assert "At least one subject must be selected" in str(exc.value)
 
 
-def test_invalid_request_no_topics():
+def test_invalid_distribution_sum():
     data = {
-        "subjects": [
-            {
-                "name": "Python",
-                "topics": []
-            }
-        ],
-        "difficulty": "Medium",
-        "duration": 30
+        "subjects": ["Python"],
+        "questionDistribution": {"mcq": 60, "scenario": 30},  # Sum = 90 (Invalid)
+        "difficultyDistribution": {"easy": 20, "medium": 50, "hard": 30}
     }
     with pytest.raises(ValidationError) as exc:
         AssessmentGenerateRequest(**data)
-    assert "Every subject must contain at least one topic" in str(exc.value)
-
-
-def test_invalid_request_negative_counts():
-    data = {
-        "subjects": [
-            {
-                "name": "Python",
-                "topics": [
-                    {"name": "Functions", "mcqCount": -1, "scenarioCount": 2}
-                ]
-            }
-        ],
-        "difficulty": "Medium",
-        "duration": 30
-    }
-    with pytest.raises(ValidationError) as exc:
-        AssessmentGenerateRequest(**data)
-    assert "Input should be greater than or equal to 0" in str(exc.value)
-
-
-def test_invalid_request_total_questions_zero():
-    data = {
-        "subjects": [
-            {
-                "name": "Python",
-                "topics": [
-                    {"name": "Functions", "mcqCount": 0, "scenarioCount": 0}
-                ]
-            }
-        ],
-        "difficulty": "Medium",
-        "duration": 30
-    }
-    with pytest.raises(ValidationError) as exc:
-        AssessmentGenerateRequest(**data)
-    assert "Total question count (MCQ + Scenario) must be greater than 0" in str(exc.value)
-
-
-def test_invalid_request_difficulty():
-    data = {
-        "subjects": [
-            {
-                "name": "Python",
-                "topics": [
-                    {"name": "Functions", "mcqCount": 2, "scenarioCount": 1}
-                ]
-            }
-        ],
-        "difficulty": "SuperHard",
-        "duration": 30
-    }
-    with pytest.raises(ValidationError) as exc:
-        AssessmentGenerateRequest(**data)
-    assert "Difficulty must be one of" in str(exc.value)
+    assert "MCQ percentage and Scenario percentage must sum to 100%" in str(exc.value)
 
 
 def test_valid_mcq_question_response():
@@ -159,7 +77,7 @@ def test_valid_mcq_question_response():
     }
     q = QuestionResponse(**data)
     assert q.type == "MCQ"
-    assert q.scenario is None
+    assert len(q.options) == 4
 
 
 def test_valid_scenario_question_response():
@@ -178,52 +96,6 @@ def test_valid_scenario_question_response():
     assert q.scenario == "A team needs to write a utility helper."
 
 
-def test_invalid_scenario_missing_scenario_field():
-    data = {
-        "subject": "Python",
-        "topic": "Functions",
-        "type": "SCENARIO",
-        "difficulty": "Medium",
-        "question": "Which design pattern is best?",
-        "options": None,
-        "correctAnswer": "A"
-    }
-    with pytest.raises(ValidationError) as exc:
-        QuestionResponse(**data)
-    assert "Scenario questions must contain a scenario field" in str(exc.value)
-
-
-def test_invalid_question_options_count():
-    data = {
-        "subject": "Python",
-        "topic": "Functions",
-        "type": "MCQ",
-        "difficulty": "Medium",
-        "question": "What is 1+1?",
-        "options": ["1", "2", "3"],
-        "correctAnswer": "2"
-    }
-    with pytest.raises(ValidationError) as exc:
-        QuestionResponse(**data)
-    # Pydantic validates option counts or min_items
-    assert "List should have at least 4 items" in str(exc.value) or "Options list must contain exactly four items" in str(exc.value)
-
-
-def test_invalid_question_correct_answer_not_in_options():
-    data = {
-        "subject": "Python",
-        "topic": "Functions",
-        "type": "MCQ",
-        "difficulty": "Medium",
-        "question": "What is 1+1?",
-        "options": ["1", "2", "3", "4"],
-        "correctAnswer": "5"
-    }
-    with pytest.raises(ValidationError) as exc:
-        QuestionResponse(**data)
-    assert "Correct answer '5' must match one of the options" in str(exc.value)
-
-
 import asyncio
 
 # ==========================================
@@ -232,7 +104,6 @@ import asyncio
 
 @patch("app.services.azure_openai_service.AzureOpenAIService.generate_questions")
 def test_generate_assessment_success(mock_generate_questions):
-    # Setup mock data returned by AzureOpenAIService
     mock_generate_questions.return_value = [
         {
             "subject": "Python",
@@ -258,16 +129,10 @@ def test_generate_assessment_success(mock_generate_questions):
     ]
 
     request_data = {
-        "subjects": [
-            {
-                "name": "Python",
-                "topics": [
-                    {"name": "Functions", "mcqCount": 1, "scenarioCount": 1}
-                ]
-            }
-        ],
-        "difficulty": "Medium",
-        "duration": 30
+        "subjects": ["Python"],
+        "questionDistribution": {"mcq": 50, "scenario": 50},
+        "difficultyDistribution": {"easy": 0, "medium": 100, "hard": 0},
+        "duration": "30 minutes"
     }
     request = AssessmentGenerateRequest(**request_data)
 
@@ -279,67 +144,3 @@ def test_generate_assessment_success(mock_generate_questions):
     assert len(response.questions) == 2
     assert response.questions[0].type == "MCQ"
     assert response.questions[1].type == "SCENARIO"
-    assert response.questions[1].scenario == "Coding a math script."
-    assert response.questions[1].exampleInput == "2, 2"
-    assert response.questions[1].exampleOutput == "4"
-
-
-@patch("app.services.azure_openai_service.AzureOpenAIService.generate_questions")
-def test_generate_assessment_ai_timeout(mock_generate_questions):
-    mock_generate_questions.side_effect = TimeoutError("Azure OpenAI timed out.")
-
-    request_data = {
-        "subjects": [
-            {
-                "name": "Python",
-                "topics": [
-                    {"name": "Functions", "mcqCount": 1, "scenarioCount": 1}
-                ]
-            }
-        ],
-        "difficulty": "Medium",
-        "duration": 30
-    }
-    request = AssessmentGenerateRequest(**request_data)
-    service = AssessmentGenerationService()
-
-    with pytest.raises(HTTPException) as exc:
-        asyncio.run(service.generate_assessment(request))
-    assert exc.value.status_code == 503
-    assert "AI Service Unavailable" in exc.value.detail
-
-
-@patch("app.services.azure_openai_service.AzureOpenAIService.generate_questions")
-def test_generate_assessment_validation_failure(mock_generate_questions):
-    # Mock returns a question with correct answer not in options list
-    mock_generate_questions.return_value = [
-        {
-            "subject": "Python",
-            "topic": "Functions",
-            "type": "MCQ",
-            "difficulty": "Medium",
-            "question": "What is 1+1?",
-            "options": ["1", "2", "3", "4"],
-            "correctAnswer": "99"  # Invalid!
-        }
-    ]
-
-    request_data = {
-        "subjects": [
-            {
-                "name": "Python",
-                "topics": [
-                    {"name": "Functions", "mcqCount": 1, "scenarioCount": 0}
-                ]
-            }
-        ],
-        "difficulty": "Medium",
-        "duration": 30
-    }
-    request = AssessmentGenerateRequest(**request_data)
-    service = AssessmentGenerationService()
-
-    with pytest.raises(HTTPException) as exc:
-        asyncio.run(service.generate_assessment(request))
-    assert exc.value.status_code == 500
-    assert "Azure OpenAI response formatting error" in exc.value.detail

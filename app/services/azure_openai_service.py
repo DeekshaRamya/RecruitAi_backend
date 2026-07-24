@@ -45,65 +45,81 @@ class AzureOpenAIService:
 
     def _build_prompt(self, request: AssessmentGenerateRequest) -> str:
         """
-        Dynamically constructs the prompt based on subjects, topics, question count, and difficulty.
+        Dynamically constructs the prompt based on selected subjects and percentage distributions.
+        AI determines ideal total question count (15-30) if not specified.
         """
-        topics_details = []
-        for subject in request.subjects:
-            for topic in subject.topics:
-                topics_details.append(
-                    f"- Subject: '{subject.name}', Topic: '{topic.name}' => Generate EXACTLY: MCQ Questions = {topic.mcqCount}, Scenario Questions = {topic.scenarioCount}"
-                )
-        topics_str = "\n".join(topics_details)
+        num_subjects = len(request.subjects)
+        target_total = request.totalQuestions or (15 if num_subjects == 1 else (20 if num_subjects == 2 else 25))
+
+        mcq_count = round(target_total * request.questionDistribution.mcq / 100.0)
+        scenario_count = target_total - mcq_count
+
+        easy_count = round(target_total * request.difficultyDistribution.easy / 100.0)
+        medium_count = round(target_total * request.difficultyDistribution.medium / 100.0)
+        hard_count = target_total - (easy_count + medium_count)
+
+        subjects_str = ", ".join(request.subjects)
 
         prompt = f"""Generate technical recruitment assessment questions based on the following configurations:
 
-Selected Difficulty: {request.difficulty}
+Selected Subjects: {subjects_str}
 
-Subjects & Topics Configuration:
-{topics_str}
+AUTOMATIC QUESTION COUNT SELECTION:
+- You (the AI) must automatically determine the ideal total number of questions (between 15 and 30 questions depending on the selected subjects and assessment objective).
+- Target approximately {target_total} total questions.
+
+Question Type Distribution Ratios (Strictly respect these percentages across the generated question set):
+- MCQ Questions (type "MCQ"): ~{mcq_count} questions ({request.questionDistribution.mcq}%)
+- Scenario-Based Questions (type "SCENARIO"): ~{scenario_count} questions ({request.questionDistribution.scenario}%)
+
+Difficulty Level Distribution Ratios (Strictly respect these percentages across the generated question set):
+- Easy: ~{easy_count} questions ({request.difficultyDistribution.easy}%)
+- Medium: ~{medium_count} questions ({request.difficultyDistribution.medium}%)
+- Hard: ~{hard_count} questions ({request.difficultyDistribution.hard}%)
 
 CRITICAL RULES AND CONSTRAINTS (YOU MUST COMPLY WITH ALL RULES):
 1. Return ONLY valid JSON. Do NOT wrap the JSON in markdown code blocks like ```json or ```. Return the raw JSON string directly.
-2. Do NOT include any explanations, introduction, markdown headers, or footnotes. Only return the JSON object matching the requested schema.
-3. For MCQ Questions (type: "MCQ"):
-   - Must contain: "subject", "topic", "type": "MCQ", "difficulty", "question", "options" (exactly 4 unique options), "correctAnswer".
-   - The "correctAnswer" must match one of the four options character-for-character (exact string match). Do not leave "correctAnswer" empty or null.
-   - Do NOT generate duplicate options within a single question. All four options must be unique.
-4. For Scenario-Based Questions (type: "SCENARIO"):
-   - Must contain: "subject", "topic", "type": "SCENARIO", "difficulty", "scenario" (a detailed programming/business/logic scenario context), "question" (the actual task/problem statement for the scenario), "correctAnswer" (the complete expected solution code, query, or text), "exampleInput" (a sample input format or data string), "exampleOutput" (the expected sample output response string).
-   - Must NOT have options (set "options" to null or omit the options field).
+2. Do NOT include any explanations, introduction, markdown headers, or footnotes outside the JSON.
+3. Distribute the questions balanced across the selected subjects: {subjects_str}. The "subject" attribute of each question MUST be one of {request.subjects}.
+4. Avoid duplicate or repetitive questions. Generate realistic, interview-quality questions.
+5. For MCQ Questions (type: "MCQ"):
+   - Must contain: "subject", "topic", "type": "MCQ", "difficulty" ("Easy", "Medium", or "Hard"), "question", "options" (array of exactly 4 unique strings), "correctAnswer" (must match one option exactly), "explanation".
+6. For Scenario-Based Questions (type: "SCENARIO"):
+   - Must contain: "subject", "topic", "type": "SCENARIO", "difficulty" ("Easy", "Medium", or "Hard"), "scenario" (real-world problem statement context), "question" (the main task), "problemStatement" (detailed problem description), "candidateTask" (explicit instructions for candidate), "expectedAnswer" (complete expected solution code/query/answer), "evaluationCriteria" (scoring guidelines), "correctAnswer" (same as expectedAnswer), "explanation".
+   - Options must be null.
    - For SQL scenario questions (where subject is "SQL"), you MUST also generate:
-     - "databaseSchema": an array of SQL DDL CREATE TABLE statements to define the required tables (e.g., ["CREATE TABLE departments (\n    id INT PRIMARY KEY,\n    name VARCHAR(100)\n);", "CREATE TABLE employees (\n    id INT PRIMARY KEY,\n    name VARCHAR(100),\n    salary DECIMAL(10, 2),\n    department_id INT REFERENCES departments(id)\n);"])
-     - "sampleData": an array of SQL INSERT INTO statements to populate the tables with realistic sample data (e.g., ["INSERT INTO departments VALUES (1, 'Engineering');", "INSERT INTO employees VALUES (101, 'Alice', 100000.00, 1);"])
-     For other subjects (like Python or general coding), "databaseSchema" and "sampleData" should be null or omitted.
-5. All generated questions must have the difficulty field set to: "{request.difficulty}".
-6. Do NOT generate duplicate questions. Ensure each question tests a distinct aspect of the topic.
+     - "databaseSchema": array of SQL CREATE TABLE DDL statements
+     - "sampleData": array of SQL INSERT INTO statements
+7. Generate a complete set of high-quality assessment questions (between 15 and 30 questions total).
 
 Response Schema:
 {{
   "questions": [
     {{
-      "subject": "Subject Name",
-      "topic": "Topic Name",
+      "subject": "Python",
+      "topic": "Variables & Types",
       "type": "MCQ",
-      "difficulty": "{request.difficulty}",
-      "question": "Question text...",
-      "options": ["Option A", "Option B", "Option C", "Option D"],
-      "correctAnswer": "Option A"
+      "difficulty": "Easy",
+      "question": "Which of the following is a mutable data type in Python?",
+      "options": ["tuple", "str", "list", "int"],
+      "correctAnswer": "list",
+      "explanation": "Lists in Python are mutable, meaning their elements can be modified in place."
     }},
     {{
-      "subject": "Subject Name",
-      "topic": "Topic Name",
+      "subject": "SQL",
+      "topic": "Window Functions",
       "type": "SCENARIO",
-      "difficulty": "{request.difficulty}",
-      "scenario": "Scenario context...",
-      "question": "Question text based on scenario...",
-      "options": null,
-      "correctAnswer": "The complete expected code or query solution",
-      "exampleInput": "sample input details",
-      "exampleOutput": "sample output details",
-      "databaseSchema": ["CREATE TABLE departments (...);", "CREATE TABLE employees (...);"],
-      "sampleData": ["INSERT INTO departments VALUES (...);", "INSERT INTO employees VALUES (...);"]
+      "difficulty": "Hard",
+      "scenario": "Finding duplicate revenue records in financial audit database.",
+      "question": "Write an SQL query using DENSE_RANK() to identify duplicate transaction records.",
+      "problemStatement": "In an e-commerce transactions table, write a query to identify customer IDs with duplicate payments.",
+      "candidateTask": "Write a query returning customer_id and transaction_count.",
+      "expectedAnswer": "SELECT customer_id, COUNT(*) FROM transactions GROUP BY customer_id HAVING COUNT(*) > 1;",
+      "evaluationCriteria": "Correct group by clause, having count, and valid SQL syntax.",
+      "correctAnswer": "SELECT customer_id, COUNT(*) FROM transactions GROUP BY customer_id HAVING COUNT(*) > 1;",
+      "explanation": "GROUP BY with HAVING COUNT(*) > 1 filters for groups with multiple transactions.",
+      "databaseSchema": ["CREATE TABLE transactions (id INT, customer_id INT, amount DECIMAL(10,2));"],
+      "sampleData": ["INSERT INTO transactions VALUES (1, 101, 50.00), (2, 101, 50.00);"]
     }}
   ]
 }}"""

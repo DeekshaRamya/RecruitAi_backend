@@ -81,9 +81,9 @@ async def test_e2e_assessment_flow(client):
 
     # 3. Recruiter assigns the assessment to the Candidate with scheduling (Start/End/Due date)
     now = datetime.now(timezone.utc)
-    startDate = (now - timedelta(minutes=5)).strftime("%Y-%m-%d")
+    startDate = (now - timedelta(minutes=5)).isoformat()
     startTime = (now - timedelta(minutes=5)).strftime("%H:%M")
-    endTime = (now + timedelta(hours=1)).strftime("%H:%M")
+    endTime = (now + timedelta(hours=1)).isoformat()
 
     assign_payload = {
         "assessmentId": assessment_id,

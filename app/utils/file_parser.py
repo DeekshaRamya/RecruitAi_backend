@@ -10,7 +10,7 @@ def extract_text_from_pdf(file_bytes: bytes) -> str:
     """
     Extracts text content from PDF file bytes.
     """
-    try:
+    try:    
         pdf_file = io.BytesIO(file_bytes)
         reader = PdfReader(pdf_file)
         text = ""
