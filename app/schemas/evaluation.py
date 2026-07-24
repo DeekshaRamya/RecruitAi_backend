@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 from typing import List, Optional
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, Field, ConfigDict, AliasChoices
 from app.schemas.assessment import AssessmentResponse
 
 class AssessmentStartRequest(BaseModel):
@@ -44,6 +44,45 @@ class QuestionAnalysis(BaseModel):
     codeOutput: Optional[str] = None
     testResults: Optional[List[dict]] = None
 
+class ActivityLogCreate(BaseModel):
+    assignmentId: uuid.UUID
+    activityType: str  # TAB_SWITCH, WINDOW_BLUR, WINDOW_FOCUS, ESC_KEY, COPY_ATTEMPT, PASTE_ATTEMPT, CUT_ATTEMPT, RIGHT_CLICK, DEVTOOLS_ATTEMPT, FULLSCREEN_EXIT, PAGE_REFRESH, PAGE_RELOAD
+    warningCount: Optional[int] = 0
+    questionNumber: Optional[int] = None
+    remainingTime: Optional[str] = None
+    browserInfo: Optional[str] = None
+    details: Optional[str] = None
+
+class ActivityLogResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+
+    id: uuid.UUID
+    assignmentId: uuid.UUID = Field(validation_alias=AliasChoices('assignmentId', 'assignment_id'))
+    candidateId: uuid.UUID = Field(validation_alias=AliasChoices('candidateId', 'candidate_id'))
+    assessmentId: Optional[uuid.UUID] = Field(default=None, validation_alias=AliasChoices('assessmentId', 'assessment_id'))
+    activityType: str = Field(validation_alias=AliasChoices('activityType', 'activity_type'))
+    timestamp: datetime
+    warningCount: int = Field(default=0, validation_alias=AliasChoices('warningCount', 'warning_count'))
+    questionNumber: Optional[int] = Field(default=None, validation_alias=AliasChoices('questionNumber', 'question_number'))
+    remainingTime: Optional[str] = Field(default=None, validation_alias=AliasChoices('remainingTime', 'remaining_time'))
+    browserInfo: Optional[str] = Field(default=None, validation_alias=AliasChoices('browserInfo', 'browser_info'))
+    details: Optional[str] = None
+
+class ActivitySummary(BaseModel):
+    totalWarnings: int = 0
+    tabSwitches: int = 0
+    windowBlurs: int = 0
+    windowFocuses: int = 0
+    escPresses: int = 0
+    copyAttempts: int = 0
+    pasteAttempts: int = 0
+    cutAttempts: int = 0
+    rightClickAttempts: int = 0
+    devToolsAttempts: int = 0
+    fullScreenExits: int = 0
+    pageRefreshes: int = 0
+    autoSubmitted: bool = False
+
 class AssessmentResultResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -80,6 +119,10 @@ class AssessmentResultResponse(BaseModel):
     overallStrengths: Optional[str] = None
     overallWeaknesses: Optional[str] = None
     hiringRecommendation: Optional[str] = None
+    
+    # Activity log and summary for proctoring audit
+    activityLogs: Optional[List[ActivityLogResponse]] = None
+    activitySummary: Optional[ActivitySummary] = None
     
     # Question-by-question details
     questionsAnalysis: Optional[List[QuestionAnalysis]] = None
@@ -134,7 +177,3 @@ class SqlExecutionResponse(BaseModel):
     runtime_error: Optional[str] = None
     syntax_error: Optional[str] = None
     status: str = "Success"
-
-
-
-

@@ -35,11 +35,15 @@ class AssessmentGenerationService:
                 # 1. Generate raw questions from Azure OpenAI
                 questions_raw = await self.openai_service.generate_questions(request)
 
+                # 1.5. Enforce Phase 1 (MCQs) -> Phase 2 (Scenario) topic-grouped ordering
+                from app.utils.question_sorter import sort_assessment_questions
+                sorted_questions_raw = sort_assessment_questions(questions_raw)
+
                 # 2. Validate and parse questions into Pydantic models
                 validated_questions = []
                 validation_errors = []
 
-                for idx, q_data in enumerate(questions_raw):
+                for idx, q_data in enumerate(sorted_questions_raw):
                     try:
                         validated_q = QuestionResponse(**q_data)
                         validated_questions.append(validated_q)

@@ -46,9 +46,15 @@ async def generate_assessment(
     """
     return await service.generate_assessment(request)
 
+from app.utils.question_sorter import sort_assessment_questions
+
 async def _get_all_assessments(db: AsyncSession):
     result = await db.execute(select(Assessment).order_by(Assessment.id.desc()))
-    return result.scalars().all()
+    assessments = result.scalars().all()
+    for asm in assessments:
+        if asm.questions:
+            asm.questions = sort_assessment_questions(asm.questions)
+    return assessments
 
 @router.get(
     "",
@@ -71,6 +77,7 @@ async def get_assessments(
     return await _get_all_assessments(db)
 
 async def _save_assessment_data(request: AssessmentSaveRequest, db: AsyncSession):
+    sorted_q = sort_assessment_questions(request.questions)
     db_assessment = Assessment(
         name=request.name,
         subjects=request.subjects,
@@ -80,7 +87,7 @@ async def _save_assessment_data(request: AssessmentSaveRequest, db: AsyncSession
         created_date=request.createdDate,
         status=request.status,
         candidates_assigned=request.candidatesAssigned,
-        questions=request.questions
+        questions=sorted_q
     )
     db.add(db_assessment)
     await db.commit()

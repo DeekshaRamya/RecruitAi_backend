@@ -328,4 +328,80 @@ class AssessmentResult(Base):
     assessment = relationship("Assessment")
 
 
+class CandidateActivityLog(Base):
+    __tablename__ = "candidate_activity_logs"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), 
+        primary_key=True, 
+        default=uuid.uuid4
+    )
+    assignment_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("assessment_assignments.id", ondelete="CASCADE"),
+        nullable=False
+    )
+    candidate_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False
+    )
+    assessment_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("assessments.id", ondelete="CASCADE"),
+        nullable=True
+    )
+    activity_type: Mapped[str] = mapped_column(String(100), nullable=False)
+    timestamp: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), 
+        server_default=func.now(),
+        nullable=False
+    )
+    warning_count: Mapped[int] = mapped_column(default=0, nullable=False)
+    question_number: Mapped[int | None] = mapped_column(nullable=True)
+    remaining_time: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    browser_info: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    details: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+
+    # Relationships
+    assignment = relationship("AssessmentAssignment")
+    candidate = relationship("User")
+    assessment = relationship("Assessment")
+
+    # Compatibility properties for Pydantic/Frontend camelCase serialization
+    @property
+    def assignmentId(self) -> uuid.UUID:
+        return self.assignment_id
+
+    @property
+    def candidateId(self) -> uuid.UUID:
+        return self.candidate_id
+
+    @property
+    def assessmentId(self) -> uuid.UUID | None:
+        return self.assessment_id
+
+    @property
+    def activityType(self) -> str:
+        return self.activity_type
+
+    @property
+    def warningCount(self) -> int:
+        return self.warning_count
+
+    @property
+    def questionNumber(self) -> int | None:
+        return self.question_number
+
+    @property
+    def remainingTime(self) -> str | None:
+        return self.remaining_time
+
+    @property
+    def browserInfo(self) -> str | None:
+        return self.browser_info
+
+
+
+
 

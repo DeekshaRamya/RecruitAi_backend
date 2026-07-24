@@ -16,7 +16,7 @@ if sys.platform == "win32":
 
 from sqlalchemy import text
 from app.database.database import engine, Base
-from app.database.models import User, LoginHistory, Assessment, AssessmentAssignment
+from app.database.models import User, LoginHistory, Assessment, AssessmentAssignment, CandidateActivityLog
 from app.api.auth import router as auth_router
 from app.api.users import router as users_router
 from app.api.candidate import router as candidate_router
@@ -128,7 +128,7 @@ async def lifespan(app: FastAPI):
             existing_tables = await conn.run_sync(get_table_names)
             logger.info(f"Verified actual tables present in Database: {existing_tables}")
             
-            expected_tables = ["users", "login_history", "assessments", "assessment_assignments", "candidate_answers", "assessment_results"]
+            expected_tables = ["users", "login_history", "assessments", "assessment_assignments", "candidate_answers", "assessment_results", "candidate_activity_logs"]
             missing_tables = [t for t in expected_tables if t not in existing_tables]
             if missing_tables:
                 logger.error(f"🚨 Missing tables in database: {missing_tables}")

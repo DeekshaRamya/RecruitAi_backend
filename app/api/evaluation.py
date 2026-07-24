@@ -3,7 +3,7 @@ import asyncio
 import logging
 from datetime import datetime, timezone
 from typing import List, Optional
-from fastapi import APIRouter, Depends, status, HTTPException
+from fastapi import APIRouter, Depends, status, HTTPException, Request
 from sqlalchemy import select
 from sqlalchemy.orm import joinedload, selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -16,7 +16,8 @@ from app.database.models import (
     AssessmentAssignment, 
     UserRole, 
     CandidateAnswer, 
-    AssessmentResult
+    AssessmentResult,
+    CandidateActivityLog
 )
 from app.schemas.evaluation import (
     AssessmentStartRequest,
@@ -29,7 +30,10 @@ from app.schemas.evaluation import (
     PythonExecutionResponse,
     SubmitCodeRequest,
     SqlExecutionRequest,
-    SqlExecutionResponse
+    SqlExecutionResponse,
+    ActivityLogCreate,
+    ActivityLogResponse,
+    ActivitySummary
 )
 from app.services.azure_openai_service import AzureOpenAIService
 from app.services.code_execution_service import CodeExecutionService
@@ -121,15 +125,19 @@ async def start_assessment(
     await db.commit()
     await db.refresh(assignment)
 
-    # 5. Sanitize questions (remove correctAnswer to prevent client-side inspection cheating)
-    sanitized_questions = []
+    # 5. Sanitize and sort questions (MCQs first, then Scenario, grouped by topic)
+    from app.utils.question_sorter import sort_assessment_questions
+
+    raw_sanitized = []
     for q in assignment.assessment.questions:
         q_copy = dict(q)
         if "correctAnswer" in q_copy:
             del q_copy["correctAnswer"]
         if "hiddenTestCases" in q_copy:
             del q_copy["hiddenTestCases"]
-        sanitized_questions.append(q_copy)
+        raw_sanitized.append(q_copy)
+
+    sanitized_questions = sort_assessment_questions(raw_sanitized)
 
     return {
         "assignmentId": assignment.id,
@@ -305,10 +313,8 @@ async def submit_assessment(
         )
 
     if assignment.status == "COMPLETED":
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Assessment already completed"
-        )
+        logger.info(f"Submit Assessment API: Assignment {request.assignmentId} is already COMPLETED. Returning existing evaluation result.")
+        return await get_result(assignmentId=request.assignmentId, current_user=current_user, db=db)
 
     # 3. Process candidate answers (stripping whitespace to prevent matching bugs)
     answers_map = {ans.questionId.strip(): ans.answer for ans in request.answers}
@@ -1099,6 +1105,16 @@ async def get_result(
             )
         )
 
+    # Fetch candidate activity logs for proctoring audit
+    logs_res = await db.execute(
+        select(CandidateActivityLog)
+        .where(CandidateActivityLog.assignment_id == res_obj.assignment_id)
+        .order_by(CandidateActivityLog.timestamp.asc())
+    )
+    activity_logs = logs_res.scalars().all()
+    activity_summary = _build_activity_summary(activity_logs, auto_submitted=res_obj.auto_submitted or False)
+    log_responses = [ActivityLogResponse.model_validate(l) for l in activity_logs]
+
     return AssessmentResultResponse(
         id=res_obj.id,
         assignmentId=res_obj.assignment_id,
@@ -1126,8 +1142,117 @@ async def get_result(
         overallStrengths=res_obj.overall_strengths,
         overallWeaknesses=res_obj.overall_weaknesses,
         hiringRecommendation=res_obj.hiring_recommendation,
+        activityLogs=log_responses,
+        activitySummary=activity_summary,
         questionsAnalysis=analysis_list
     )
+
+
+def _build_activity_summary(logs: List[CandidateActivityLog], auto_submitted: bool = False) -> ActivitySummary:
+    summary = ActivitySummary(autoSubmitted=auto_submitted)
+    max_warn = 0
+    for log in logs:
+        t = (log.activity_type or "").strip().upper()
+        if log.warning_count and log.warning_count > max_warn:
+            max_warn = log.warning_count
+
+        if t == "TAB_SWITCH":
+            summary.tabSwitches += 1
+        elif t == "WINDOW_BLUR":
+            summary.windowBlurs += 1
+        elif t == "WINDOW_FOCUS":
+            summary.windowFocuses += 1
+        elif t == "ESC_KEY":
+            summary.escPresses += 1
+        elif t == "COPY_ATTEMPT":
+            summary.copyAttempts += 1
+        elif t == "PASTE_ATTEMPT":
+            summary.pasteAttempts += 1
+        elif t == "CUT_ATTEMPT":
+            summary.cutAttempts += 1
+        elif t == "RIGHT_CLICK":
+            summary.rightClickAttempts += 1
+        elif t in {"DEVTOOLS_ATTEMPT", "DEVTOOLS"}:
+            summary.devToolsAttempts += 1
+        elif t in {"FULLSCREEN_EXIT", "FULL_SCREEN_EXIT"}:
+            summary.fullScreenExits += 1
+        elif t in {"PAGE_REFRESH", "PAGE_RELOAD"}:
+            summary.pageRefreshes += 1
+
+    summary.totalWarnings = max_warn
+    return summary
+
+
+@router.post("/assessment/activity-log", summary="Record candidate proctoring activity event in real-time")
+async def record_activity_log(
+    payload: ActivityLogCreate,
+    request: Request,
+    current_user: User = Depends(require_candidate),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Saves a candidate activity event log in real-time.
+    """
+    assignment_res = await db.execute(
+        select(AssessmentAssignment).where(
+            AssessmentAssignment.id == payload.assignmentId,
+            AssessmentAssignment.candidate_id == current_user.id
+        )
+    )
+    assignment = assignment_res.scalar_one_or_none()
+    if not assignment:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Assessment assignment not found")
+
+    user_agent = request.headers.get("user-agent", payload.browserInfo or "Unknown Browser")
+
+    log_entry = CandidateActivityLog(
+        assignment_id=payload.assignmentId,
+        candidate_id=current_user.id,
+        assessment_id=assignment.assessment_id,
+        activity_type=payload.activityType,
+        warning_count=payload.warningCount or 0,
+        question_number=payload.questionNumber,
+        remaining_time=payload.remainingTime,
+        browser_info=user_agent[:500],
+        details=payload.details
+    )
+    db.add(log_entry)
+    await db.commit()
+    await db.refresh(log_entry)
+
+    return {"success": True, "logId": str(log_entry.id), "timestamp": log_entry.timestamp.isoformat()}
+
+
+@router.get("/assessment/activity-log/{assignmentId}", summary="Get candidate activity logs and summary for an assignment")
+async def get_activity_logs(
+    assignmentId: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Retrieves candidate proctoring audit logs and summarized counts for recruiters or candidate.
+    """
+    logs_res = await db.execute(
+        select(CandidateActivityLog)
+        .where(CandidateActivityLog.assignment_id == assignmentId)
+        .order_by(CandidateActivityLog.timestamp.asc())
+    )
+    logs = logs_res.scalars().all()
+
+    result_res = await db.execute(
+        select(AssessmentResult).where(AssessmentResult.assignment_id == assignmentId)
+    )
+    res_obj = result_res.scalar_one_or_none()
+    auto_sub = res_obj.auto_submitted if res_obj else False
+
+    summary = _build_activity_summary(logs, auto_submitted=auto_sub)
+    log_responses = [ActivityLogResponse.model_validate(l) for l in logs]
+
+    return {
+        "assignmentId": assignmentId,
+        "summary": summary,
+        "logs": log_responses
+    }
 
 @router.get(
     "/candidate/results",
