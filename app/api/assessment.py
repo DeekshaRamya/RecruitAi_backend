@@ -179,14 +179,34 @@ async def _delete_assessment_data(id: str, db: AsyncSession):
     except ValueError:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid assessment ID format")
 
+    from app.database.models import AssessmentAssignment
+    from sqlalchemy import delete
+
     result = await db.execute(select(Assessment).where(Assessment.id == assessment_uuid))
     assessment = result.scalar_one_or_none()
+
     if not assessment:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Assessment not found")
-        
+        # Fallback check: check if ID was an assignment ID
+        asgn_res = await db.execute(select(AssessmentAssignment).where(AssessmentAssignment.id == assessment_uuid))
+        asgn = asgn_res.scalar_one_or_none()
+        if asgn:
+            assessment_res = await db.execute(select(Assessment).where(Assessment.id == asgn.assessment_id))
+            assessment = assessment_res.scalar_one_or_none()
+            if not assessment:
+                await db.delete(asgn)
+                await db.commit()
+                return {"message": "Assessment assignment deleted successfully", "id": id}
+
+    if not assessment:
+        # Idempotent deletion: if assessment is already deleted or not found, return 200 OK
+        return {"message": "Assessment deleted successfully or already removed", "id": id}
+
+    # Delete associated assignments explicitly to ensure clean deletion
+    await db.execute(delete(AssessmentAssignment).where(AssessmentAssignment.assessment_id == assessment.id))
+
     await db.delete(assessment)
     await db.commit()
-    return {"message": "Assessment deleted successfully"}
+    return {"message": "Assessment deleted successfully", "id": id}
 
 @router.delete(
     "/{id}",

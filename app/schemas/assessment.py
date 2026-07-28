@@ -71,25 +71,54 @@ class QuestionResponse(BaseModel):
         if self.type not in valid_types:
             raise ValueError(f"Question type must be one of {valid_types}")
 
+        banned_phrases = ["all of the above", "none of the above", "all of these", "none of these"]
+
         if self.type in {"SCENARIO", "CODING", "PYTHON_CODING", "SCENARIO_CODING"}:
             # Normalize type to SCENARIO
             self.type = "SCENARIO"
             self.options = None
             if not self.scenario and self.problemStatement:
                 self.scenario = self.problemStatement
+            if not self.problemStatement and self.scenario:
+                self.problemStatement = self.scenario
+            if not self.candidateTask:
+                self.candidateTask = self.question
             if not self.expectedAnswer and self.correctAnswer:
                 self.expectedAnswer = self.correctAnswer
             if not self.correctAnswer and self.expectedAnswer:
                 self.correctAnswer = self.expectedAnswer
         else:
             self.type = "MCQ"
-            if not self.options or len(self.options) != 4:
-                # If options missing or not 4 items, default fallback format
-                if not self.options:
-                    self.options = ["Option A", "Option B", "Option C", "Option D"]
-            if self.correctAnswer not in self.options:
-                if self.options:
-                    self.correctAnswer = self.options[0]
+            if not self.options:
+                self.options = ["Option A", "Option B", "Option C", "Option D"]
+
+            cleaned_opts = []
+            for opt in self.options:
+                opt_str = str(opt).strip()
+                if any(phrase in opt_str.lower() for phrase in banned_phrases):
+                    opt_str = f"Invalid {self.topic or 'concept'} configuration"
+                cleaned_opts.append(opt_str)
+
+            while len(cleaned_opts) < 4:
+                cleaned_opts.append(f"Option {chr(65 + len(cleaned_opts))}")
+            if len(cleaned_opts) > 4:
+                if self.correctAnswer in cleaned_opts[:4]:
+                    cleaned_opts = cleaned_opts[:4]
+                else:
+                    cleaned_opts = cleaned_opts[:3] + [self.correctAnswer]
+
+            self.options = cleaned_opts
+
+            # Match exact string or pick first option
+            exact_match = None
+            for opt in self.options:
+                if opt.strip().lower() == str(self.correctAnswer).strip().lower():
+                    exact_match = opt
+                    break
+            if exact_match:
+                self.correctAnswer = exact_match
+            else:
+                self.correctAnswer = self.options[0]
 
         return self
 

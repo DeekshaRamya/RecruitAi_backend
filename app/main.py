@@ -1,6 +1,5 @@
 import logging
 import sys
-import asyncio
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, status
 from fastapi.responses import JSONResponse
@@ -16,7 +15,10 @@ if sys.platform == "win32":
 
 from sqlalchemy import text
 from app.database.database import engine, Base
+<<<<<<< HEAD
 from app.database.models import User, LoginHistory, Assessment, AssessmentAssignment, CandidateActivityLog, EnglishInterview, EnglishInterviewConversation
+=======
+>>>>>>> e8d2c07c883324eb0e30a8186652aec01695c151
 from app.api.auth import router as auth_router
 from app.api.users import router as users_router
 from app.api.candidate import router as candidate_router
