@@ -49,7 +49,12 @@ async def generate_assessment(
 from app.utils.question_sorter import sort_assessment_questions
 
 async def _get_all_assessments(db: AsyncSession):
-    result = await db.execute(select(Assessment).order_by(Assessment.id.desc()))
+    valid_statuses = ["Active", "ACTIVE", "Created", "CREATED"]
+    result = await db.execute(
+        select(Assessment)
+        .where(Assessment.status.in_(valid_statuses))
+        .order_by(Assessment.id.desc())
+    )
     assessments = result.scalars().all()
     for asm in assessments:
         if asm.questions:

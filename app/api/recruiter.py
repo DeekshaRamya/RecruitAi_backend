@@ -3,12 +3,12 @@ from fastapi.responses import FileResponse
 from typing import List
 import os
 import uuid
-from sqlalchemy import select
+from sqlalchemy import select, func
 from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.database.database import get_db
 from app.dependencies.auth import require_recruiter
-from app.database.models import User, EnglishInterview, AssessmentResult
+from app.database.models import User, UserRole, Assessment, AssessmentAssignment, EnglishInterview, AssessmentResult
 from app.schemas.auth import UserResponse
 
 router = APIRouter(prefix="/api/recruiter", tags=["Recruiter Endpoints"])
@@ -20,17 +20,36 @@ UPLOAD_DIR = "./uploads"
     summary="Get Recruiter Dashboard Data",
     response_model=dict
 )
-def get_recruiter_dashboard(current_user: User = Depends(require_recruiter)):
+async def get_recruiter_dashboard(
+    current_user: User = Depends(require_recruiter),
+    db: AsyncSession = Depends(get_db)
+):
     """
     Returns dashboard statistics and information. Access is restricted to users with the RECRUITER role.
     """
+    res_cand = await db.execute(select(func.count(User.id)).where(User.role == UserRole.CANDIDATE))
+    total_candidates = res_cand.scalar() or 0
+
+    valid_statuses = ["Active", "ACTIVE", "Created", "CREATED"]
+    res_asm = await db.execute(
+        select(func.count(Assessment.id)).where(Assessment.status.in_(valid_statuses))
+    )
+    active_assessments = res_asm.scalar() or 0
+
+    res_completed = await db.execute(
+        select(func.count(AssessmentAssignment.id)).where(
+            AssessmentAssignment.status.in_(["SUBMITTED", "COMPLETED"])
+        )
+    )
+    completed_assessments = res_completed.scalar() or 0
+
     return {
-        "message": f"Welcome to the Recruiter Dashboard, {current_user.name}!",
+        "message": f"Welcome to the Recruiter Dashboard, {current_user.full_name}!",
         "role": current_user.role,
         "stats": {
-            "total_assessments_created": 12,
-            "active_candidates": 48,
-            "pending_reviews": 5
+            "total_candidates": total_candidates,
+            "active_assessments": active_assessments,
+            "completed_assessments": completed_assessments
         }
     }
 
