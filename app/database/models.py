@@ -402,6 +402,102 @@ class CandidateActivityLog(Base):
         return self.browser_info
 
 
+class EnglishInterview(Base):
+    __tablename__ = "english_interviews"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), 
+        primary_key=True, 
+        default=uuid.uuid4
+    )
+    candidate_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False
+    )
+    assessment_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("assessments.id", ondelete="SET NULL"),
+        nullable=True
+    )
+    assignment_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("assessment_assignments.id", ondelete="SET NULL"),
+        nullable=True
+    )
+    session_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        default=uuid.uuid4,
+        nullable=False
+    )
+    resume_filename: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    start_time: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), 
+        server_default=func.now(),
+        nullable=False
+    )
+    end_time: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True
+    )
+    duration: Mapped[int | None] = mapped_column(nullable=True)  # in seconds
+    status: Mapped[str] = mapped_column(String(50), default="IN_PROGRESS", nullable=False)  # "IN_PROGRESS", "COMPLETED"
+    
+    # AI Analysis fields generated upon completion
+    communication_score: Mapped[int | None] = mapped_column(nullable=True)
+    grammar_score: Mapped[int | None] = mapped_column(nullable=True)
+    vocabulary_score: Mapped[int | None] = mapped_column(nullable=True)
+    confidence_score: Mapped[int | None] = mapped_column(nullable=True)
+    fluency_score: Mapped[int | None] = mapped_column(nullable=True)
+    professionalism_score: Mapped[int | None] = mapped_column(nullable=True)
+    pronunciation_score: Mapped[int | None] = mapped_column(nullable=True)
+    overall_level: Mapped[str | None] = mapped_column(String(50), nullable=True)  # "Excellent", "Very Good", etc.
+    interview_summary: Mapped[str | None] = mapped_column(String(4000), nullable=True)
+    strengths: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    weaknesses: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    areas_for_improvement: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    recommendation: Mapped[str | None] = mapped_column(String(100), nullable=True)  # "Recommended", "Not Recommended", etc.
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), 
+        server_default=func.now(),
+        nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), 
+        server_default=func.now(), 
+        onupdate=func.now(),
+        nullable=False
+    )
+
+    # Relationships
+    candidate = relationship("User", foreign_keys=[candidate_id])
+    assessment = relationship("Assessment", foreign_keys=[assessment_id])
+    assignment = relationship("AssessmentAssignment", foreign_keys=[assignment_id])
+    conversations = relationship("EnglishInterviewConversation", back_populates="interview", cascade="all, delete-orphan", order_by="EnglishInterviewConversation.question_number")
 
 
+class EnglishInterviewConversation(Base):
+    __tablename__ = "english_interview_conversations"
 
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), 
+        primary_key=True, 
+        default=uuid.uuid4
+    )
+    interview_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("english_interviews.id", ondelete="CASCADE"),
+        nullable=False
+    )
+    question_number: Mapped[int] = mapped_column(nullable=False)
+    ai_question: Mapped[str] = mapped_column(String(4000), nullable=False)
+    candidate_answer: Mapped[str | None] = mapped_column(String(4000), nullable=True)
+    timestamp: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False
+    )
+
+    # Relationships
+    interview = relationship("EnglishInterview", back_populates="conversations")

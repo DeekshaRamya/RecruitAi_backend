@@ -16,7 +16,7 @@ if sys.platform == "win32":
 
 from sqlalchemy import text
 from app.database.database import engine, Base
-from app.database.models import User, LoginHistory, Assessment, AssessmentAssignment, CandidateActivityLog
+from app.database.models import User, LoginHistory, Assessment, AssessmentAssignment, CandidateActivityLog, EnglishInterview, EnglishInterviewConversation
 from app.api.auth import router as auth_router
 from app.api.users import router as users_router
 from app.api.candidate import router as candidate_router
@@ -25,6 +25,7 @@ from app.api.assessment import router as assessment_router, plural_router as ass
 from app.api.interview import router as interview_router
 from app.api.assignment import router as assignment_router
 from app.api.evaluation import router as evaluation_router
+from app.api.english_assessment import router as english_assessment_router
 
 # Setup Logging
 logging.basicConfig(
@@ -214,6 +215,7 @@ app.include_router(assessments_plural_router)
 app.include_router(assignment_router)
 app.include_router(evaluation_router)
 app.include_router(interview_router)
+app.include_router(english_assessment_router)
 
 @app.get("/", tags=["Health Check"])
 def root():

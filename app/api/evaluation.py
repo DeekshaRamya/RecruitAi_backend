@@ -306,7 +306,7 @@ async def submit_assessment(
         )
 
     # 2. Security checks
-    if assignment.candidate_id != current_user.id:
+    if current_user.role == UserRole.CANDIDATE and assignment.candidate_id != current_user.id:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Access forbidden"
