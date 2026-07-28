@@ -363,9 +363,18 @@ async def submit_assessment(
     if ai_tasks:
         ids = [t[0] for t in ai_tasks]
         futures = [t[1] for t in ai_tasks]
-        completed = await asyncio.gather(*futures)
-        for q_id_str, eval_res in zip(ids, completed):
-            ai_evals[q_id_str] = eval_res
+        try:
+            completed = await asyncio.gather(*futures, return_exceptions=True)
+            for q_id_str, eval_res in zip(ids, completed):
+                if isinstance(eval_res, Exception):
+                    logger.error(f"AI evaluation failed for question {q_id_str}: {eval_res}")
+                    ai_evals[q_id_str] = None
+                else:
+                    ai_evals[q_id_str] = eval_res
+        except Exception as gather_err:
+            logger.error(f"Gather AI evaluations general failure: {gather_err}")
+            for q_id_str in ids:
+                ai_evals[q_id_str] = None
 
     # Grading loop
     db_answers = []
@@ -589,15 +598,24 @@ async def submit_assessment(
             "score": int(db_ans.similarity_score or 0)
         })
 
-    overall_eval = await ai_service.generate_overall_evaluation(
-        assessment_name=assignment.assessment.name,
-        total_questions=total_questions,
-        correct_count=correct_answers,
-        partial_count=partially_correct_answers,
-        incorrect_count=wrong_answers,
-        final_percentage=round(percentage, 2),
-        questions_summary=questions_summary
-    )
+    try:
+        overall_eval = await ai_service.generate_overall_evaluation(
+            assessment_name=assignment.assessment.name,
+            total_questions=total_questions,
+            correct_count=correct_answers,
+            partial_count=partially_correct_answers,
+            incorrect_count=wrong_answers,
+            final_percentage=round(percentage, 2),
+            questions_summary=questions_summary
+        )
+    except Exception as overall_err:
+        logger.error(f"Failed to generate overall evaluation in submit_assessment: {overall_err}")
+        overall_eval = {
+            "overall_feedback": f"Completed the assessment with a score of {round(percentage, 2)}%.",
+            "overall_strengths": "Demonstrated technical skills in SQL / Python coding.",
+            "overall_weaknesses": "Review missed questions to improve technical depth.",
+            "hiring_recommendation": "Awaiting Recruiter Review"
+        }
 
     result_record = AssessmentResult(
         assignment_id=assignment.id,
@@ -915,15 +933,24 @@ async def evaluate_assignment(
             "score": int(db_ans.similarity_score or 0)
         })
 
-    overall_eval = await ai_service.generate_overall_evaluation(
-        assessment_name=assignment.assessment.name,
-        total_questions=total_questions,
-        correct_count=correct_answers,
-        partial_count=partially_correct_answers,
-        incorrect_count=wrong_answers,
-        final_percentage=round(percentage, 2),
-        questions_summary=questions_summary
-    )
+    try:
+        overall_eval = await ai_service.generate_overall_evaluation(
+            assessment_name=assignment.assessment.name,
+            total_questions=total_questions,
+            correct_count=correct_answers,
+            partial_count=partially_correct_answers,
+            incorrect_count=wrong_answers,
+            final_percentage=round(percentage, 2),
+            questions_summary=questions_summary
+        )
+    except Exception as overall_err:
+        logger.error(f"Failed to generate overall evaluation in submit second endpoint: {overall_err}")
+        overall_eval = {
+            "overall_feedback": f"Completed the assessment with a score of {round(percentage, 2)}%.",
+            "overall_strengths": "Demonstrated technical skills in SQL / Python coding.",
+            "overall_weaknesses": "Review missed questions to improve technical depth.",
+            "hiring_recommendation": "Awaiting Recruiter Review"
+        }
 
     # Fetch/update existing result record
     res_query = await db.execute(
