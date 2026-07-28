@@ -328,13 +328,17 @@ async def submit_assessment(
     if due_date and due_date.tzinfo is None:
         due_date = due_date.replace(tzinfo=timezone.utc)
 
-    if assignment.status == "EXPIRED" or (end_time and now > end_time) or (due_date and now > due_date):
+    # Allow submission if the assessment is currently IN_PROGRESS or EXPIRED, to prevent progress loss.
+    # We only raise an error if the assignment is expired/overdue and was never started by the candidate.
+    is_overdue = (end_time and now > end_time) or (due_date and now > due_date)
+    if is_overdue and assignment.status not in ["IN_PROGRESS", "EXPIRED"]:
         assignment.status = "EXPIRED"
         await db.commit()
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="This assessment has expired and is no longer available."
         )
+
 
     # 3. Process candidate answers (stripping whitespace to prevent matching bugs)
     answers_map = {ans.questionId.strip(): ans.answer for ans in request.answers}
