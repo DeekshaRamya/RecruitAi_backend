@@ -175,6 +175,7 @@ RESPONSE SCHEMA (RETURN RAW CLEAN JSON ONLY):
 
             # 3. Clean MCQ questions
             if q_type == "MCQ":
+                q["question"] = str(q.get("question") or q.get("candidateTask") or f"Identify the correct option regarding {q['subject']} - {q['topic']}.").strip()
                 raw_options = q.get("options") or []
                 correct_ans = str(q.get("correctAnswer", "")).strip()
 
@@ -221,6 +222,7 @@ RESPONSE SCHEMA (RETURN RAW CLEAN JSON ONLY):
                 q["scenario"] = scenario_bg
                 q["problemStatement"] = problem_stmt
                 q["candidateTask"] = task
+                q["question"] = str(q.get("question") or task).strip()
 
                 expected = q.get("expectedAnswer") or q.get("correctAnswer") or "Implementation matching requirements."
                 q["expectedAnswer"] = expected
@@ -231,6 +233,12 @@ RESPONSE SCHEMA (RETURN RAW CLEAN JSON ONLY):
 
                 if not q.get("explanation"):
                     q["explanation"] = f"Solution demonstrates proper implementation of {q['subject']} ({q['topic']})."
+
+                # Coerce string schema/sampleData to lists
+                if q.get("databaseSchema") and isinstance(q.get("databaseSchema"), str):
+                    q["databaseSchema"] = [q.get("databaseSchema")]
+                if q.get("sampleData") and isinstance(q.get("sampleData"), str):
+                    q["sampleData"] = [q.get("sampleData")]
 
                 # SQL specific DDL/DML fallback
                 if q["subject"].upper() == "SQL":

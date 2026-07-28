@@ -81,6 +81,40 @@ async def get_assessments(
     """
     return await _get_all_assessments(db)
 
+@router.get(
+    "/{id}",
+    response_model=AssessmentResponse,
+    summary="Get single assessment by ID"
+)
+@plural_router.get(
+    "/{id}",
+    response_model=AssessmentResponse,
+    summary="Get single assessment by ID"
+)
+async def get_assessment_by_id(
+    id: str,
+    current_user: User = Depends(require_recruiter),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Retrieves a single assessment by ID from the database.
+    Restricted to recruiters.
+    """
+    try:
+        assessment_uuid = uuid.UUID(id)
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid assessment ID format")
+
+    result = await db.execute(select(Assessment).where(Assessment.id == assessment_uuid))
+    assessment = result.scalar_one_or_none()
+    if not assessment:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Assessment not found")
+
+    if assessment.questions:
+        assessment.questions = sort_assessment_questions(assessment.questions)
+
+    return assessment
+
 async def _save_assessment_data(request: AssessmentSaveRequest, db: AsyncSession):
     sorted_q = sort_assessment_questions(request.questions)
     db_assessment = Assessment(

@@ -112,12 +112,16 @@ async def start_assessment(
             }
         )
 
-    if assignment.status == "EXPIRED" or (end_time and now > end_time):
+    due_date = assignment.due_date
+    if due_date and due_date.tzinfo is None:
+        due_date = due_date.replace(tzinfo=timezone.utc)
+
+    if assignment.status == "EXPIRED" or (end_time and now > end_time) or (due_date and now > due_date):
         assignment.status = "EXPIRED"
         await db.commit()
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="The assessment time window has ended."
+            detail="This assessment has expired and is no longer available."
         )
 
     # Update status to IN_PROGRESS
@@ -315,6 +319,22 @@ async def submit_assessment(
     if assignment.status == "COMPLETED":
         logger.info(f"Submit Assessment API: Assignment {request.assignmentId} is already COMPLETED. Returning existing evaluation result.")
         return await get_result(assignmentId=request.assignmentId, current_user=current_user, db=db)
+
+    now = datetime.now(timezone.utc)
+    end_time = assignment.end_time
+    if end_time and end_time.tzinfo is None:
+        end_time = end_time.replace(tzinfo=timezone.utc)
+    due_date = assignment.due_date
+    if due_date and due_date.tzinfo is None:
+        due_date = due_date.replace(tzinfo=timezone.utc)
+
+    if assignment.status == "EXPIRED" or (end_time and now > end_time) or (due_date and now > due_date):
+        assignment.status = "EXPIRED"
+        await db.commit()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="This assessment has expired and is no longer available."
+        )
 
     # 3. Process candidate answers (stripping whitespace to prevent matching bugs)
     answers_map = {ans.questionId.strip(): ans.answer for ans in request.answers}

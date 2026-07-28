@@ -10,6 +10,7 @@ from app.database.database import get_db
 from app.dependencies.auth import require_recruiter
 from app.database.models import User, UserRole, Assessment, AssessmentAssignment, EnglishInterview, AssessmentResult
 from app.schemas.auth import UserResponse
+from app.api.assignment import check_and_update_expired_assignments
 
 router = APIRouter(prefix="/api/recruiter", tags=["Recruiter Endpoints"])
 
@@ -27,6 +28,7 @@ async def get_recruiter_dashboard(
     """
     Returns dashboard statistics and information. Access is restricted to users with the RECRUITER role.
     """
+    await check_and_update_expired_assignments(db)
     res_cand = await db.execute(select(func.count(User.id)).where(User.role == UserRole.CANDIDATE))
     total_candidates = res_cand.scalar() or 0
 
