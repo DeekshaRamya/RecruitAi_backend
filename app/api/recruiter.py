@@ -290,78 +290,177 @@ async def get_all_english_assessments(
 
 @router.get(
     "/overall-results",
-    summary="Get unified comparison results for all assessments"
+    summary="Get unified comparison results for candidates with completed technical assessments assigned by logged-in recruiter"
 )
 async def get_overall_results(
     current_user: User = Depends(require_recruiter),
     db: AsyncSession = Depends(get_db)
 ):
     """
-    Returns consolidated assessment scores (Technical & English) for all candidates.
+    Returns consolidated assessment scores (Technical & English) ONLY for candidates who:
+    1. Have been assigned an assessment by the logged-in recruiter.
+    2. Have successfully COMPLETED their Technical Assessment.
     """
-    # 1. Fetch all candidates
-    candidates_res = await db.execute(
-        select(User).where(User.role == "candidate")
+    # Query assignments assigned by current recruiter that are COMPLETED/SUBMITTED or have an AssessmentResult
+    assignments_res = await db.execute(
+        select(AssessmentAssignment)
+        .options(
+            selectinload(AssessmentAssignment.candidate),
+            selectinload(AssessmentAssignment.result)
+        )
+        .where(
+            AssessmentAssignment.recruiter_id == current_user.id,
+            AssessmentAssignment.status.in_(["COMPLETED", "SUBMITTED"])
+        )
     )
-    candidates = candidates_res.scalars().all()
-    
-    # 2. Fetch all technical assessment results
-    tech_res = await db.execute(
-        select(AssessmentResult)
-    )
-    tech_results = tech_res.scalars().all()
-    # Map candidate_id -> best percentage score
-    tech_map = {}
-    for r in tech_results:
-        if r.candidate_id not in tech_map or r.percentage > tech_map[r.candidate_id]:
-            tech_map[r.candidate_id] = r.percentage
-            
-    # 3. Fetch all English interview results
+    completed_assignments = assignments_res.scalars().all()
+
+    # Also check if there are AssessmentResults linked to assignments created by current recruiter
+    if not completed_assignments:
+        results_res = await db.execute(
+            select(AssessmentAssignment)
+            .options(
+                selectinload(AssessmentAssignment.candidate),
+                selectinload(AssessmentAssignment.result)
+            )
+            .join(AssessmentResult, AssessmentResult.assignment_id == AssessmentAssignment.id)
+            .where(
+                AssessmentAssignment.recruiter_id == current_user.id
+            )
+        )
+        completed_assignments = results_res.scalars().all()
+
+    # Filter candidates with valid candidates and non-null completed technical results
+    valid_candidates_map = {}
+    for asgn in completed_assignments:
+        if not asgn.candidate:
+            continue
+        c_id = asgn.candidate_id
+        
+        # Candidate must have an AssessmentResult or completed assignment
+        tech_score = None
+        if asgn.result and asgn.result.percentage is not None:
+            tech_score = round(asgn.result.percentage)
+        elif asgn.status in ["COMPLETED", "SUBMITTED"] and asgn.score is not None:
+            tech_score = round(asgn.score)
+
+        # Only include if technical assessment is genuinely completed with a score
+        if tech_score is not None:
+            if c_id not in valid_candidates_map or tech_score > valid_candidates_map[c_id]["tech_score"]:
+                valid_candidates_map[c_id] = {
+                    "candidate": asgn.candidate,
+                    "tech_score": tech_score,
+                    "assignment_id": str(asgn.id)
+                }
+
+    if not valid_candidates_map:
+        return []
+
+    # Fetch English interviews for these eligible candidate IDs
+    candidate_ids = list(valid_candidates_map.keys())
+    english_map = {}
     english_res = await db.execute(
         select(EnglishInterview)
+        .where(EnglishInterview.candidate_id.in_(candidate_ids))
     )
     english_interviews = english_res.scalars().all()
-    # Map candidate_id -> communication score
-    english_map = {}
     for i in english_interviews:
-        if i.candidate_id not in english_map or (i.status == "COMPLETED" and i.communication_score and (not english_map[i.candidate_id].get("score") or i.communication_score > english_map[i.candidate_id].get("score", 0))):
+        if (
+            i.candidate_id not in english_map
+            or (i.status == "COMPLETED" and i.communication_score and (not english_map[i.candidate_id].get("score") or i.communication_score > english_map[i.candidate_id].get("score", 0)))
+        ):
             english_map[i.candidate_id] = {
                 "score": i.communication_score,
                 "status": i.status,
                 "completed_at": i.end_time.isoformat() if i.end_time else None
             }
 
-    # 4. Consolidate results
+    # Dynamic AI Recommendation generator helper
+    def generate_ai_recommendation(t_score, e_score, a_score):
+        effective_score = a_score if a_score is not None else (t_score if t_score is not None else e_score)
+
+        if effective_score >= 80 and (t_score is None or t_score >= 75) and (e_score is None or e_score >= 75):
+            decision = "Highly Recommended"
+            suitability = f"Exceptional candidate overall ({effective_score}%). Highly recommended for immediate hiring or advancing to final executive rounds."
+        elif effective_score >= 65:
+            decision = "Recommended"
+            suitability = f"Solid performance ({effective_score}%). Meets core hiring criteria and is recommended to proceed."
+        elif effective_score >= 50:
+            decision = "Recommended with Reservations"
+            suitability = f"Moderate performance ({effective_score}%). Recommended with reservations; further technical or language verification advised."
+        else:
+            decision = "Not Recommended"
+            suitability = f"Overall performance ({effective_score}%) falls below benchmark requirements. Not recommended to proceed."
+
+        strengths = []
+        if t_score is not None and t_score >= 75:
+            strengths.append(f"Strong technical problem-solving ({t_score}%)")
+        if e_score is not None and e_score >= 75:
+            strengths.append(f"Fluent English communication ({e_score}%)")
+        if t_score is not None and 60 <= t_score < 75:
+            strengths.append(f"Solid technical foundation ({t_score}%)")
+        if e_score is not None and 60 <= e_score < 75:
+            strengths.append(f"Clear verbal articulation ({e_score}%)")
+        if not strengths:
+            strengths.append("Completed mandatory evaluation assessments")
+
+        weaknesses = []
+        if t_score is not None and t_score < 60:
+            weaknesses.append(f"Technical score below benchmark ({t_score}%)")
+        if e_score is not None and e_score < 60:
+            weaknesses.append(f"Communication score needs improvement ({e_score}%)")
+        if e_score is None:
+            weaknesses.append("Pending English speaking assessment submission")
+        if not weaknesses:
+            weaknesses.append("No critical shortcomings identified")
+
+        tech_perf = f"Technical Score: {t_score}%"
+        comm_skills = f"Communication Score: {e_score}%" if e_score is not None else "English speaking assessment pending"
+        explanation = f"{decision}: {suitability} ({tech_perf}, {comm_skills})."
+
+        return {
+            "decision": decision,
+            "explanation": explanation,
+            "strengths": strengths,
+            "weaknesses": weaknesses,
+            "technical_performance": tech_perf,
+            "communication_skills": comm_skills,
+            "suitability": suitability
+        }
+
+    # Consolidate results for eligible completed candidates only
     overall = []
-    for c in candidates:
-        tech_score = tech_map.get(c.id)
-        eng_data = english_map.get(c.id)
+    for c_id, item in valid_candidates_map.items():
+        c = item["candidate"]
+        tech_score = item["tech_score"]
+        eng_data = english_map.get(c_id)
         
         eng_score = eng_data["score"] if eng_data else None
         eng_status = eng_data["status"] if eng_data else "NOT_STARTED"
         eng_date = eng_data["completed_at"] if eng_data else None
         
-        # Calculate combined average if both completed
+        # Calculate combined average score
         avg_score = None
         if tech_score is not None and eng_score is not None:
             avg_score = round((tech_score + eng_score) / 2)
         elif tech_score is not None:
             avg_score = tech_score
-        elif eng_score is not None:
-            avg_score = eng_score
-            
+
+        rec = generate_ai_recommendation(tech_score, eng_score, avg_score)
+
         overall.append({
             "candidate_id": str(c.id),
             "candidate_name": c.full_name or "Candidate",
             "candidate_email": c.email,
             "technical_score": tech_score,
-            "technical_status": "COMPLETED" if tech_score is not None else "NOT_STARTED",
+            "technical_status": "COMPLETED",
             "english_score": eng_score,
             "english_status": eng_status,
             "english_completed_at": eng_date,
-            "overall_score": avg_score
+            "overall_score": avg_score,
+            "ai_recommendation": rec
         })
-        
+
     return overall
 
 
