@@ -67,32 +67,29 @@ class GeminiService:
 
     async def generate_first_question(self, candidate_name: str, resume_text: str) -> str:
         """
-        Generates a personalized, concise, natural introductory question based STRICTLY on the candidate's uploaded resume.
+        Generates a personalized, concise, natural introductory question based on the candidate's uploaded resume.
         """
         system_instruction = (
-            "You are an elite corporate HR Manager conducting a real-time voice interview. "
-            "Your tone is warm, professional, and conversational. "
-            "MANDATORY RULE: You MUST ask interview questions based ONLY on the candidate's uploaded resume text provided. "
-            "First, thoroughly read and comprehend the candidate's uploaded resume content. "
-            "Then, greet the candidate briefly by name and ask exactly ONE clear question directly referencing a specific project, skill, or experience listed in their uploaded resume. "
-            "Keep your response under 30 words so it sounds completely natural when spoken out loud."
+            "You are a professional corporate HR Manager conducting a real-time voice interview. "
+            "Your tone is warm, natural, and conversational. "
+            "CRITICAL: Keep your response very short (1 to 2 sentences maximum, under 30 words total). "
+            "Do NOT give long intros, multi-paragraph welcomes, or list instructions. "
+            "You MUST ask a question based ONLY on the candidate's uploaded resume details."
         )
 
         prompt = f"""
         Candidate Name: {candidate_name}
-
-        Uploaded Candidate Resume Content:
+        Candidate Resume Information:
         \"\"\"
         {resume_text}
         \"\"\"
 
         Task:
-        1. Read and understand the candidate's uploaded resume content above thoroughly.
-        2. Greet {candidate_name} briefly by name in 1 short sentence.
-        3. Ask ONE concise question derived ONLY and directly from a specific project, technical skill, role, or experience stated in their uploaded resume.
-        4. Do NOT ask generic questions unrelated to their resume. The question MUST explicitly reference their resume content.
-
-        Keep the total response under 30 words for voice synthesis.
+        1. Greet {candidate_name} briefly by name in 1 short sentence.
+        2. Analyze the Candidate Resume Information carefully first to understand it correctly.
+        3. Ask exactly ONE concise introductory question based ONLY on the technical projects, programming skills, or experience listed in their resume. Do NOT ask generic self-introduction questions (such as 'introduce yourself' or 'share your background'). Instead, pick a specific project or skill from their resume and ask about it.
+        
+        Keep the entire output under 30 words so it sounds completely natural when spoken out loud.
         """
         try:
             return await self._call_ai(prompt, system_instruction)
@@ -100,22 +97,21 @@ class GeminiService:
             logger.warning(f"Failed to generate first question via AI API: {e}. Using personalized fallback.")
             return (
                 f"Hello {candidate_name}! Welcome to your HR interview. "
-                f"I reviewed your resume — could you share an overview of your top technical project listed on your resume?"
+                f"I saw Python and SQL on your resume. Could you share a project where you used them?"
             )
 
     async def generate_next_question(self, resume_text: str, conversation_history: List[Dict[str, str]], last_answer: str) -> Dict[str, Any]:
         """
-        Analyzes candidate's last response and resume details to generate the next personalized interview question based STRICTLY on their uploaded resume.
+        Analyzes candidate's last response and resume details to generate the next personalized interview question or follow-up question.
         Returns a JSON with analysis notes and the next question string.
         """
         system_instruction = (
             "You are an elite corporate HR Manager conducting a real-time voice interview. "
-            "Your tone must be natural, concise, and conversational. "
-            "MANDATORY RULE: Every interview question MUST be derived STRICTLY and ONLY from the candidate's uploaded resume text and their previous answers. "
-            "First, thoroughly comprehend the candidate's uploaded resume context. "
-            "Ensure you do NOT ask generic or off-topic questions — every question must focus on specific projects, technologies, tools, skills, or roles from their uploaded resume. "
-            "Keep the question direct, natural, and under 25-30 words. "
-            "Respond ONLY with a valid JSON object matching the requested schema."
+            "Your tone must be natural, concise, and conversational like a real HR interviewer on a voice call. "
+            "CRITICAL: Keep the next question direct, natural, and under 25-30 words so it sounds smooth when spoken out loud. "
+            "You must respond ONLY with a valid JSON object matching the requested schema. "
+            "You must ask exactly ONE question at a time. "
+            "The question generated MUST be based ONLY on the candidate's uploaded resume details."
         )
 
         formatted_history = []
@@ -127,7 +123,7 @@ class GeminiService:
         q_num = len(conversation_history) + 1
 
         prompt = f"""
-        Uploaded Candidate Resume Content:
+        Candidate Resume Information:
         \"\"\"
         {resume_text}
         \"\"\"
@@ -139,16 +135,23 @@ class GeminiService:
         \"{last_answer}\"
 
         Task:
-        1. Understand and analyze the candidate's latest answer for grammar, fluency, and confidence.
+        1. Understand and analyze the candidate's latest answer for:
+           - Grammar: Check tense correctness, subject-verb agreement, sentence structures.
+           - Fluency: Assess coherence, organization of thoughts, linking words.
+           - Confidence & Vocabulary: Evaluate expressiveness, professional vocabulary, self-assurance.
         
-        2. Generate Question {q_num} for the interview:
-           STRICT RESUME QUESTION RULES:
-           - The question MUST be based ONLY on the candidate's uploaded resume content and their previous answers.
-           - Deep-dive into specific projects, technologies/tools used, key responsibilities, challenges faced, or achievements listed in their uploaded resume.
-           - Make sure the AI understands the candidate's background context completely before asking.
-           - Do NOT ask generic questions unrelated to their resume background.
-           - Keep the question direct and concise (under 25-30 words) for natural voice playback.
-           - Do NOT repeat previously asked questions.
+        2. Generate Question {q_num} for the interview.
+           RULES FOR PERSONALIZED QUESTION GENERATION:
+           - Analyze the Candidate Resume Information carefully first. Make sure you understand their background correctly.
+           - All questions generated MUST be based ONLY on details directly listed in the candidate's uploaded resume (such as their specific projects, technical skills, internship/experience, or achievements).
+           - Priority 1 (Follow-up): If the candidate's latest answer mentioned a specific project, technical obstacle, team role, or achievement from their resume, generate an intelligent FOLLOW-UP question directly related to that response (e.g. "What was your specific contribution to that project?", "Why did you choose that tech stack?", "How did you optimize performance or measure results?").
+           - Priority 2 (Resume Deep Dive): If a follow-up is not required, select an unasked section directly from their resume:
+             * Projects: Ask them to explain a specific project from their resume, their role, challenges faced, technologies used, or what improvements they would make.
+             * Skills & Technologies: Ask about a specific skill or programming language listed on their resume (e.g. "I noticed you listed Python on your resume. Can you describe a project where you used Python?", "How comfortable are you with SQL/React?").
+             * Internship & Experience: Ask about responsibilities handled, key learnings, or challenges during their internship or past experience listed on their resume.
+             * Certifications & Achievements: Ask about a specific certification or achievement listed on their resume.
+           - Do NOT ask generic open-ended HR questions (such as 'where do you see yourself in five years', 'what motivates you', or generic situational questions) unless they are directly linked to their resume experiences.
+           - Make sure questions are conversational, open-ended, and do NOT repeat previous questions.
 
         You MUST return a valid JSON object matching this schema:
         {{

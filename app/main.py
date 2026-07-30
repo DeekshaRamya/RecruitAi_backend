@@ -137,7 +137,7 @@ async def lifespan(app: FastAPI):
                 
     except Exception as e:
         logger.error(f"🚨 Primary database connection or migration failed: {e}")
-        raise e
+        logger.warning("⚠️ Database initialization could not be completed, but the server will continue to boot. Database operations will be tried dynamically upon client requests.")
             
     logger.info("RecruitAI Backend Server Started Successfully")
     yield

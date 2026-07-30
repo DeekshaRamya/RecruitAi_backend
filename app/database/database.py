@@ -8,13 +8,12 @@ logger = logging.getLogger("recruitai-backend")
 # Primary Database connection URL (typically PostgreSQL)
 db_url = settings.DATABASE_URL
 
-# Primary PostgreSQL Engine with pool pre-ping, recycling, and a 30-second connection timeout
+from sqlalchemy.pool import NullPool
+
+# Primary PostgreSQL Engine with NullPool to prevent connection exhaustion on shared dev database
 engine = create_async_engine(
     db_url,
-    pool_pre_ping=True,
-    pool_recycle=1800,
-    pool_size=10,
-    max_overflow=20,
+    poolclass=NullPool,
     connect_args={"connect_timeout": 30} if db_url.startswith("postgresql") else {}
 )
 
