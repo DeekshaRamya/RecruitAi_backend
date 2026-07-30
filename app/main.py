@@ -60,81 +60,92 @@ async def lifespan(app: FastAPI):
     logger.info(f"SQLAlchemy Discovered Tables ({len(table_names)}): {table_names}")
 
     try:
-        # 2. Get connection metadata (database and schema)
-        async with engine.connect() as conn:
-            db_name_result = await conn.execute(text("SELECT current_database()"))
-            db_name = db_name_result.scalar()
-            
-            db_schema_result = await conn.execute(text("SELECT current_schema()"))
-            db_schema = db_schema_result.scalar()
-            
-            logger.info(f"Successfully connected to Database: '{db_name}' | Schema: '{db_schema}'")
-            
-        # 3. Create tables
-        logger.info("Executing Base.metadata.create_all() on primary database...")
-        async with engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
-        logger.info("CREATE TABLE statements executed successfully.")
+        # 2. Get connection metadata (database and schema) with retries
+        connected = False
+        for attempt in range(1, 6):
+            try:
+                async with engine.connect() as conn:
+                    db_name_result = await conn.execute(text("SELECT current_database()"))
+                    db_name = db_name_result.scalar()
+                    
+                    db_schema_result = await conn.execute(text("SELECT current_schema()"))
+                    db_schema = db_schema_result.scalar()
+                    
+                    logger.info(f"Successfully connected to Database: '{db_name}' | Schema: '{db_schema}'")
+                    connected = True
+                    break
+            except Exception as conn_err:
+                logger.warning(f"Database connection attempt {attempt}/5 failed: {conn_err}. Retrying in 3s...")
+                import asyncio
+                await asyncio.sleep(3)
 
-        # 3.1 Migration: Run ALTER TABLE commands to add new columns to existing tables if they don't exist
-        logger.info("Running schema migrations (ALTER TABLE)...")
-        async with engine.begin() as conn:
-            await conn.execute(text("ALTER TABLE candidate_answers ADD COLUMN IF NOT EXISTS assessment_id UUID;"))
-            await conn.execute(text("ALTER TABLE candidate_answers ALTER COLUMN question_id TYPE VARCHAR(4000);"))
-            
-            # Backfill assessment_id for existing candidate answers using assignment_id relationships
-            await conn.execute(text("""
-                UPDATE candidate_answers ca
-                SET assessment_id = aa.assessment_id
-                FROM assessment_assignments aa
-                WHERE ca.assignment_id = aa.id AND ca.assessment_id IS NULL;
-            """))
-            
-            # Add foreign key constraint for assessment_id if not present
-            await conn.execute(text("""
-                DO $$
-                BEGIN
-                    IF NOT EXISTS (SELECT 1 FROM information_schema.table_constraints WHERE constraint_name = 'fk_candidate_answers_assessment') THEN
-                        ALTER TABLE candidate_answers ADD CONSTRAINT fk_candidate_answers_assessment FOREIGN KEY (assessment_id) REFERENCES assessments(id) ON DELETE CASCADE;
-                    END IF;
-                END $$;
-            """))
-            
-            await conn.execute(text("ALTER TABLE assessment_results ADD COLUMN IF NOT EXISTS overall_feedback VARCHAR(4000);"))
-            await conn.execute(text("ALTER TABLE assessment_results ADD COLUMN IF NOT EXISTS overall_strengths VARCHAR(4000);"))
-            await conn.execute(text("ALTER TABLE assessment_results ADD COLUMN IF NOT EXISTS overall_weaknesses VARCHAR(4000);"))
-            await conn.execute(text("ALTER TABLE assessment_results ADD COLUMN IF NOT EXISTS hiring_recommendation VARCHAR(255);"))
-            await conn.execute(text("ALTER TABLE assessment_results ADD COLUMN IF NOT EXISTS auto_submitted BOOLEAN DEFAULT FALSE;"))
-            await conn.execute(text("ALTER TABLE assessment_results ADD COLUMN IF NOT EXISTS submission_reason VARCHAR(1000);"))
-            await conn.execute(text("ALTER TABLE assessment_results ADD COLUMN IF NOT EXISTS warning_count INTEGER DEFAULT 0;"))
-            await conn.execute(text("ALTER TABLE assessment_results ADD COLUMN IF NOT EXISTS warning_history JSON;"))
-            
-            # Coding assessment execution schema columns
-            await conn.execute(text("ALTER TABLE candidate_answers ADD COLUMN IF NOT EXISTS passed_test_cases INTEGER;"))
-            await conn.execute(text("ALTER TABLE candidate_answers ADD COLUMN IF NOT EXISTS failed_test_cases INTEGER;"))
-            await conn.execute(text("ALTER TABLE candidate_answers ADD COLUMN IF NOT EXISTS run_time DOUBLE PRECISION;"))
-            await conn.execute(text("ALTER TABLE candidate_answers ADD COLUMN IF NOT EXISTS code_output VARCHAR(4000);"))
-            await conn.execute(text("ALTER TABLE candidate_answers ADD COLUMN IF NOT EXISTS test_results JSON;"))
-        logger.info("Schema migrations executed successfully.")
+        if not connected:
+            logger.warning("⚠️ PostgreSQL connection limit reached on host '20.112.97.115'. Server will start and retry DB connections on incoming API calls.")
+        else:
+            # 3. Create tables
+            logger.info("Executing Base.metadata.create_all() on primary database...")
+            async with engine.begin() as conn:
+                await conn.run_sync(Base.metadata.create_all)
+            logger.info("CREATE TABLE statements executed successfully.")
 
-        
-        # 4. Verify table presence
-        async with engine.connect() as conn:
-            def get_table_names(sync_conn):
-                from sqlalchemy import inspect
-                inspector = inspect(sync_conn)
-                return inspector.get_table_names()
-            
-            existing_tables = await conn.run_sync(get_table_names)
-            logger.info(f"Verified actual tables present in Database: {existing_tables}")
-            
-            expected_tables = ["users", "login_history", "assessments", "assessment_assignments", "candidate_answers", "assessment_results", "candidate_activity_logs"]
-            missing_tables = [t for t in expected_tables if t not in existing_tables]
-            if missing_tables:
-                logger.error(f"🚨 Missing tables in database: {missing_tables}")
-            else:
-                logger.info("✅ All required tables successfully verified and present in PostgreSQL.")
+            # 3.1 Migration: Run ALTER TABLE commands to add new columns to existing tables if they don't exist
+            logger.info("Running schema migrations (ALTER TABLE)...")
+            async with engine.begin() as conn:
+                await conn.execute(text("ALTER TABLE candidate_answers ADD COLUMN IF NOT EXISTS assessment_id UUID;"))
+                await conn.execute(text("ALTER TABLE candidate_answers ALTER COLUMN question_id TYPE VARCHAR(4000);"))
                 
+                # Backfill assessment_id for existing candidate answers using assignment_id relationships
+                await conn.execute(text("""
+                    UPDATE candidate_answers ca
+                    SET assessment_id = aa.assessment_id
+                    FROM assessment_assignments aa
+                    WHERE ca.assignment_id = aa.id AND ca.assessment_id IS NULL;
+                """))
+                
+                # Add foreign key constraint for assessment_id if not present
+                await conn.execute(text("""
+                    DO $$
+                    BEGIN
+                        IF NOT EXISTS (SELECT 1 FROM information_schema.table_constraints WHERE constraint_name = 'fk_candidate_answers_assessment') THEN
+                            ALTER TABLE candidate_answers ADD CONSTRAINT fk_candidate_answers_assessment FOREIGN KEY (assessment_id) REFERENCES assessments(id) ON DELETE CASCADE;
+                        END IF;
+                    END $$;
+                """))
+                
+                await conn.execute(text("ALTER TABLE assessment_results ADD COLUMN IF NOT EXISTS overall_feedback VARCHAR(4000);"))
+                await conn.execute(text("ALTER TABLE assessment_results ADD COLUMN IF NOT EXISTS overall_strengths VARCHAR(4000);"))
+                await conn.execute(text("ALTER TABLE assessment_results ADD COLUMN IF NOT EXISTS overall_weaknesses VARCHAR(4000);"))
+                await conn.execute(text("ALTER TABLE assessment_results ADD COLUMN IF NOT EXISTS hiring_recommendation VARCHAR(255);"))
+                await conn.execute(text("ALTER TABLE assessment_results ADD COLUMN IF NOT EXISTS auto_submitted BOOLEAN DEFAULT FALSE;"))
+                await conn.execute(text("ALTER TABLE assessment_results ADD COLUMN IF NOT EXISTS submission_reason VARCHAR(1000);"))
+                await conn.execute(text("ALTER TABLE assessment_results ADD COLUMN IF NOT EXISTS warning_count INTEGER DEFAULT 0;"))
+                await conn.execute(text("ALTER TABLE assessment_results ADD COLUMN IF NOT EXISTS warning_history JSON;"))
+                
+                # Coding assessment execution schema columns
+                await conn.execute(text("ALTER TABLE candidate_answers ADD COLUMN IF NOT EXISTS passed_test_cases INTEGER;"))
+                await conn.execute(text("ALTER TABLE candidate_answers ADD COLUMN IF NOT EXISTS failed_test_cases INTEGER;"))
+                await conn.execute(text("ALTER TABLE candidate_answers ADD COLUMN IF NOT EXISTS run_time DOUBLE PRECISION;"))
+                await conn.execute(text("ALTER TABLE candidate_answers ADD COLUMN IF NOT EXISTS code_output VARCHAR(4000);"))
+                await conn.execute(text("ALTER TABLE candidate_answers ADD COLUMN IF NOT EXISTS test_results JSON;"))
+            logger.info("Schema migrations executed successfully.")
+
+            # 4. Verify table presence
+            async with engine.connect() as conn:
+                def get_table_names(sync_conn):
+                    from sqlalchemy import inspect
+                    inspector = inspect(sync_conn)
+                    return inspector.get_table_names()
+                
+                existing_tables = await conn.run_sync(get_table_names)
+                logger.info(f"Verified actual tables present in Database: {existing_tables}")
+                
+                expected_tables = ["users", "login_history", "assessments", "assessment_assignments", "candidate_answers", "assessment_results", "candidate_activity_logs"]
+                missing_tables = [t for t in expected_tables if t not in existing_tables]
+                if missing_tables:
+                    logger.error(f"🚨 Missing tables in database: {missing_tables}")
+                else:
+                    logger.info("✅ All required tables successfully verified and present in PostgreSQL.")
+                    
     except Exception as e:
         logger.error(f"🚨 Primary database connection or migration failed: {e}")
         raise e

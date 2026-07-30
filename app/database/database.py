@@ -5,20 +5,26 @@ from app.core.config import settings
 
 logger = logging.getLogger("recruitai-backend")
 
-# Primary Database connection URL (typically PostgreSQL)
+from sqlalchemy.pool import NullPool
+
+# Primary Database connection URL
 db_url = settings.DATABASE_URL
 
-# Primary PostgreSQL Engine with pool pre-ping, recycling, and a 30-second connection timeout
-engine = create_async_engine(
-    db_url,
-    pool_pre_ping=True,
-    pool_recycle=1800,
-    pool_size=10,
-    max_overflow=20,
-    connect_args={"connect_timeout": 30} if db_url.startswith("postgresql") else {}
-)
+def _create_engine_instance(url: str):
+    if "sqlite" in url:
+        return create_async_engine(
+            url,
+            connect_args={"check_same_thread": False}
+        )
+    return create_async_engine(
+        url,
+        poolclass=NullPool,
+        pool_pre_ping=True,
+        connect_args={"connect_timeout": 10} if url.startswith("postgresql") else {}
+    )
 
-# Async Session factory bound to PostgreSQL
+engine = _create_engine_instance(db_url)
+
 AsyncSessionLocal = async_sessionmaker(
     bind=engine,
     autocommit=False,
@@ -26,11 +32,21 @@ AsyncSessionLocal = async_sessionmaker(
     expire_on_commit=False
 )
 
-# Base class for SQLAlchemy declarative models
+def use_fallback_sqlite():
+    global engine, AsyncSessionLocal
+    fallback_url = "sqlite+aiosqlite:///./recruitai.db"
+    logger.warning(f"⚠️ PostgreSQL unavailable. Rebinding database engine to fallback SQLite database: {fallback_url}")
+    engine = create_async_engine(fallback_url, connect_args={"check_same_thread": False})
+    AsyncSessionLocal = async_sessionmaker(
+        bind=engine,
+        autocommit=False,
+        autoflush=False,
+        expire_on_commit=False
+    )
+
 class Base(DeclarativeBase):
     pass
 
-# Dependency injector to retrieve active database session
 async def get_db():
     async with AsyncSessionLocal() as db:
         yield db

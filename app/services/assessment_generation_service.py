@@ -34,6 +34,8 @@ class AssessmentGenerationService:
         max_attempts = 3
         last_exception = None
 
+        existing_questions = await self._fetch_existing_questions()
+
         for attempt in range(1, max_attempts + 1):
             logger.info(f"Question Generation Attempt {attempt} of {max_attempts}...")
             try:
@@ -64,7 +66,7 @@ class AssessmentGenerationService:
                     )
 
                     # Generate remaining questions (MCQs & non-SQL questions) via Azure OpenAI
-                    ai_raw = await self.openai_service.generate_questions(request)
+                    ai_raw = await self.openai_service.generate_questions(request, existing_questions=existing_questions)
                     # Filter out any AI-generated SQL Scenarios to guarantee SQL Scenarios come ONLY from 5001 API
                     for q in ai_raw:
                         if str(q.get("subject", "")).upper() == "SQL" and str(q.get("type", "")).upper() == "SCENARIO":
@@ -75,7 +77,7 @@ class AssessmentGenerationService:
                     questions_raw.extend(sql_scenarios)
                 else:
                     # 1. Generate raw questions from Azure OpenAI (Pure MCQ or non-SQL flow)
-                    questions_raw = await self.openai_service.generate_questions(request)
+                    questions_raw = await self.openai_service.generate_questions(request, existing_questions=existing_questions)
 
                 # 1.5. Enrich and verify any SQL MCQ questions against live AdventureWorks DB
                 enriched_questions = self._enrich_and_verify_sql_questions(questions_raw)
@@ -253,3 +255,24 @@ class AssessmentGenerationService:
         if len(rows) > max_rows:
             lines.append(f"*(showing top {max_rows} of {len(rows)} returned records)*")
         return "\n".join(lines)
+
+    async def _fetch_existing_questions(self) -> list:
+        try:
+            from sqlalchemy import select
+            from app.database.database import AsyncSessionLocal
+            from app.database.models import Assessment
+            async with AsyncSessionLocal() as session:
+                res = await session.execute(select(Assessment.questions).where(Assessment.questions.is_not(None)))
+                rows = res.scalars().all()
+                existing = []
+                for q_list in rows:
+                    if isinstance(q_list, list):
+                        for q in q_list:
+                            if isinstance(q, dict):
+                                txt = q.get("question") or q.get("problemStatement")
+                                if txt:
+                                    existing.append(str(txt).strip())
+                return existing[:40]
+        except Exception as e:
+            logger.warning(f"Could not fetch existing assessment questions for exclusion: {e}")
+            return []

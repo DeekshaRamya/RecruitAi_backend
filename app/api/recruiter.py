@@ -136,13 +136,70 @@ async def download_candidate_resume(
 
 from app.database.models import UserRole
 from app.schemas.recruiter import CandidateDetailResponse
+from app.core import security
 
-from pydantic import BaseModel
+from pydantic import BaseModel, EmailStr
+
+class CreateCandidateRequest(BaseModel):
+    name: str
+    email: str
+    password: str
+    phone: str | None = None
 
 class BulkDeleteCandidatesRequest(BaseModel):
     candidateIds: List[uuid.UUID]
 
 candidates_router = APIRouter(prefix="/api/candidates", tags=["Candidates"])
+
+@candidates_router.post(
+    "",
+    summary="Create a new Candidate Account",
+    status_code=status.HTTP_201_CREATED,
+    response_model=CandidateDetailResponse
+)
+async def create_candidate(
+    request: CreateCandidateRequest,
+    current_user: User = Depends(require_recruiter),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Creates a new candidate account by recruiter. Access restricted to Recruiters.
+    """
+    clean_email = request.email.strip().lower()
+    clean_name = request.name.strip()
+    
+    # 1. Check if user with this email already exists
+    result = await db.execute(select(User).where(func.lower(User.email) == clean_email))
+    existing_user = result.scalar_one_or_none()
+    if existing_user:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="A candidate with this email address already exists."
+        )
+
+    # 2. Hash password and create new candidate user
+    hashed_password = security.get_password_hash(request.password)
+    
+    new_candidate = User(
+        full_name=clean_name,
+        email=clean_email,
+        password=hashed_password,
+        phone=request.phone.strip() if request.phone else None,
+        role=UserRole.CANDIDATE
+    )
+
+    try:
+        db.add(new_candidate)
+        await db.commit()
+        await db.refresh(new_candidate)
+    except Exception as e:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to create candidate account: {str(e)}"
+        )
+
+    return new_candidate
 
 @candidates_router.get(
     "",

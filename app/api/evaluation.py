@@ -316,40 +316,86 @@ async def process_ai_evaluations_and_summary_background(
 
                 questions = res_obj.assignment.assessment.questions or []
 
-                # 2. Run AI Scenario grading asynchronously
+                # 2. Run AI Scenario & Technical Answer grading asynchronously
                 ai_tasks = []
                 for q in questions:
                     q_id_str = str(q.get("id") or q.get("question")).strip()
                     ans_obj = answers_map.get(q_id_str)
                     cand_ans = ans_obj.candidate_answer if ans_obj else ""
-                    if q.get("type") == "SCENARIO" and cand_ans:
+                    q_type = str(q.get("type", "MCQ")).upper()
+                    if q_type != "MCQ" and cand_ans:
                         task = ai_service.evaluate_assessment_answer(
-                            question=q.get("question", ""),
-                            scenario=q.get("scenario", ""),
-                            correct_answer=q.get("correctAnswer", ""),
-                            candidate_answer=cand_ans
+                            question=q.get("question") or q.get("problemStatement") or "",
+                            scenario=q.get("scenario") or "",
+                            correct_answer=q.get("correctAnswer") or q.get("expectedAnswer") or "",
+                            candidate_answer=cand_ans,
+                            question_type=q_type
                         )
-                        ai_tasks.append((q_id_str, ans_obj, task))
+                        ai_tasks.append((q_id_str, ans_obj, q, task))
 
                 if ai_tasks:
                     ids = [t[0] for t in ai_tasks]
                     ans_objs = [t[1] for t in ai_tasks]
-                    futures = [t[2] for t in ai_tasks]
+                    q_dicts = [t[2] for t in ai_tasks]
+                    futures = [t[3] for t in ai_tasks]
                     completed = await asyncio.gather(*futures, return_exceptions=True)
-                    for q_id_str, ans_obj, eval_res in zip(ids, ans_objs, completed):
+                    for q_id_str, ans_obj, q_dict, eval_res in zip(ids, ans_objs, q_dicts, completed):
                         if isinstance(eval_res, Exception):
-                            logger.error(f"[Background Worker] AI scenario evaluation error for question {q_id_str}: {eval_res}")
+                            logger.error(f"[Background Worker] AI evaluation error for question {q_id_str}: {eval_res}")
                         elif eval_res and ans_obj:
-                            score = eval_res.get("score", 0)
-                            ans_obj.similarity_score = eval_res.get("similarity_score", score)
+                            score = float(eval_res.get("score", 0))
+                            q_type = str(q_dict.get("type", "SCENARIO")).upper()
+                            q_marks = float(q_dict.get("marks") or 10.0) if q_type in {"CODING", "PYTHON_CODING"} else 10.0
+                            
+                            ans_obj.similarity_score = int(eval_res.get("similarity_score", score))
                             ans_obj.status = eval_res.get("status", "Incorrect")
                             ans_obj.feedback = eval_res.get("ai_explanation", eval_res.get("feedback", ""))
                             ans_obj.strengths = eval_res.get("strengths", "")
                             ans_obj.missing_points = eval_res.get("missing_points", "")
                             ans_obj.suggested_improvement = eval_res.get("suggested_improvement", eval_res.get("improvements", ""))
-                            ans_obj.marks_awarded = float(score) / 10.0
+                            ans_obj.marks_awarded = round((score / 100.0) * q_marks, 2)
                             ans_obj.ai_explanation = ans_obj.feedback
+                            if ans_obj.status == "Correct":
+                                ans_obj.is_correct = True
+                            elif ans_obj.status == "Partially Correct":
+                                ans_obj.is_correct = None
+                            else:
+                                ans_obj.is_correct = False
                             db.add(ans_obj)
+
+                    # Recalculate AssessmentResult total score metrics after AI evaluation
+                    tot_marks = 0.0
+                    tot_max = 0.0
+                    c_count = 0
+                    w_count = 0
+                    u_count = 0
+                    p_count = 0
+
+                    for q in questions:
+                        q_id_str = str(q.get("id") or q.get("question")).strip()
+                        q_type = str(q.get("type", "MCQ")).upper()
+                        q_marks = 1.0 if q_type == "MCQ" else (float(q.get("marks") or 10.0) if q_type in {"CODING", "PYTHON_CODING"} else 10.0)
+                        tot_max += q_marks
+                        
+                        a_obj = answers_map.get(q_id_str)
+                        if not a_obj or not a_obj.candidate_answer:
+                            u_count += 1
+                        else:
+                            tot_marks += float(a_obj.marks_awarded or 0.0)
+                            if a_obj.status == "Correct":
+                                c_count += 1
+                            elif a_obj.status == "Partially Correct":
+                                p_count += 1
+                            else:
+                                w_count += 1
+
+                    res_obj.marks_obtained = round(tot_marks, 2)
+                    res_obj.max_marks = tot_max
+                    res_obj.correct_answers = c_count
+                    res_obj.wrong_answers = w_count
+                    res_obj.unanswered_questions = u_count
+                    res_obj.percentage = round((tot_marks / tot_max * 100.0) if tot_max > 0 else 0.0, 2)
+                    res_obj.pass_fail = "Pass" if res_obj.percentage >= 50.0 else "Fail"
 
                 # 3. Overall Evaluation summary
                 questions_summary = [
@@ -802,12 +848,14 @@ async def evaluate_assignment(
         q_id_str = str(q_id).strip()
         ans_obj = answers_map.get(q_id_str)
         cand_ans = ans_obj.candidate_answer if ans_obj else ""
-        if q.get("type") == "SCENARIO" and cand_ans:
+        q_type = str(q.get("type", "MCQ")).upper()
+        if q_type != "MCQ" and cand_ans:
             task = ai_service.evaluate_assessment_answer(
-                question=q.get("question", ""),
-                scenario=q.get("scenario", ""),
-                correct_answer=q.get("correctAnswer", ""),
-                candidate_answer=cand_ans
+                question=q.get("question") or q.get("problemStatement") or "",
+                scenario=q.get("scenario") or "",
+                correct_answer=q.get("correctAnswer") or q.get("expectedAnswer") or "",
+                candidate_answer=cand_ans,
+                question_type=q_type
             )
             ai_tasks.append((q_id_str, task))
 
