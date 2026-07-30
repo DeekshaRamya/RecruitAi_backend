@@ -39,8 +39,8 @@ def _get_resume_text_context(candidate: User) -> str:
         with open(file_path, "rb") as f:
             file_bytes = f.read()
         resume_text = extract_text(candidate.resume_filename, file_bytes)
-        if len(resume_text) > 4000:
-            resume_text = resume_text[:4000] + "\n[Truncated...]"
+        if len(resume_text) > 12000:
+            resume_text = resume_text[:12000] + "\n[Truncated...]"
         return resume_text
     except Exception as e:
         logger.error(f"Error parsing candidate resume PDF: {e}. Falling back to default context.")

@@ -106,10 +106,28 @@ class GeminiService:
         Analyzes candidate's last response and resume details to generate the next personalized interview question or follow-up question.
         Returns a JSON with analysis notes and the next question string.
         """
+        # Verbatim repeat command check
+        last_clean = last_answer.lower().strip().replace(".", "").replace("?", "").replace("!", "")
+        repeat_phrases = [
+            "repeat the question", "please repeat", "repeat please", "can you repeat", "could you repeat",
+            "say that again", "could you say that again", "please say that again"
+        ]
+        if any(p == last_clean for p in repeat_phrases) and conversation_history:
+            prev_q = conversation_history[-1].get("ai_question")
+            if prev_q:
+                return {
+                    "analysis": {
+                        "grammar_notes": "Candidate requested to repeat the question.",
+                        "fluency_notes": "N/A",
+                        "confidence_notes": "N/A"
+                    },
+                    "next_question": prev_q
+                }
+
         system_instruction = (
             "You are an elite corporate HR Manager conducting a real-time voice interview. "
-            "Your tone must be natural, concise, and conversational like a real HR interviewer on a voice call. "
-            "CRITICAL: Keep the next question direct, natural, and under 25-30 words so it sounds smooth when spoken out loud. "
+            "Your tone must be natural, supportive, and conversational like a real human HR interviewer on a voice call. "
+            "CRITICAL: Keep the next response/question direct, natural, and under 30 words so it sounds smooth when spoken out loud. "
             "You must respond ONLY with a valid JSON object matching the requested schema. "
             "You must ask exactly ONE question at a time."
         )
@@ -131,25 +149,26 @@ class GeminiService:
         Conversation History So Far:
         {history_str}
 
-        Latest Candidate Answer to Question {q_num - 1}:
+        Latest Candidate Response to Question {q_num - 1}:
         \"{last_answer}\"
 
         Task:
-        1. Understand and analyze the candidate's latest answer for:
-           - Grammar: Check tense correctness, subject-verb agreement, sentence structures.
-           - Fluency: Assess coherence, organization of thoughts, linking words.
-           - Confidence & Vocabulary: Evaluate expressiveness, professional vocabulary, self-assurance.
+        1. Classify the Candidate's Intent and generate Question {q_num}:
+           - Case A (Repeat or Clarification Request): If the candidate says 'I didn't understand the question', 'Can you repeat it?', 'pardon', 'clarify', or asks what a term means in the question:
+             * Acknowledge the request and repeat or explain the SAME question in a simple, easy-to-understand way.
+             * CRITICAL: Do NOT skip to a new question or move to a new resume topic. Never skip a question just because the candidate asked for clarification.
+           - Case B (Question related to Current Question or Resume): If the candidate asks a query about the current question or resume (e.g. "Do you mean Python 3?", "Is this about TechCorp?"):
+             * Answer the candidate's query first in a helpful, concise way, and then ask the same interview question again.
+           - Case C (Unrelated Question / Topic Change): If the candidate changes to an unrelated topic, or asks questions that are not related to the uploaded resume or the current interview (e.g. "what is the weather?", "what is your name?"):
+             * Politely transition directly to the next resume-based question without answering the off-topic query.
+           - Case D (Valid Answer): If the candidate has answered the current question relevantly:
+             * Ask a relevant follow-up question based on their answer, OR
+             * Move to the next resume section (Projects, Skills, Experience, Certifications).
         
-        2. Generate Question {q_num} for the interview.
-           RULES FOR PERSONALIZED QUESTION GENERATION:
-           - Priority 1 (Resume Follow-up): If the candidate's latest answer mentioned a specific project, technical obstacle, team role, or achievement that exists on their resume, generate an intelligent FOLLOW-UP question directly related to their response (e.g. "What was your specific contribution to that project?", "What was the biggest technical challenge you faced and how did you overcome it?", "Why did you choose that tech stack?", "How did you optimize performance or measure results?").
-           - Priority 2 (Resume Deep Dive): Select an unasked section directly from their resume:
-             * Projects: Ask them to explain a specific project from their resume, their role, challenges faced, technologies used, or what improvements they would make.
-             * Skills & Technologies: Ask about a specific skill or programming language listed on their resume (e.g. "I noticed you listed Python on your resume. Can you describe a project where you used Python?", "How comfortable are you with SQL/React?", "Which technology do you enjoy working with most and why?").
-             * Internship & Experience: Ask about responsibilities handled, key learnings, or challenges during their internship or past experience.
-             * Certifications & Achievements: Ask about why they pursued a specific certification or about an achievement listed on their resume.
-           - CRITICAL RULE: All questions MUST be based ONLY on the facts, projects, skills, certifications, and experience explicitly listed on the candidate's resume. Do NOT ask generic career goal questions, generic situational questions, or general HR questions that have no connection to their resume. Make sure the AI understands the resume facts correctly before generating questions.
-           - Make sure questions are conversational, open-ended, and do NOT repeat previous questions.
+        2. RULES FOR QUESTION GENERATION:
+           - All interview questions must still be based ONLY on the candidate's uploaded resume (projects, skills, internships, experience, certifications, education). Never generate a question the resume doesn't support.
+           - Understand candidate's intent and respond naturally, like a real human interviewer.
+           - Do not repeat previously asked questions.
 
         You MUST return a valid JSON object matching this schema:
         {{
@@ -158,7 +177,7 @@ class GeminiService:
             "fluency_notes": "A brief sentence summarizing fluency and coherence.",
             "confidence_notes": "A brief sentence summarizing confidence and vocabulary."
           }},
-          "next_question": "The exact single interview question to present to the candidate."
+          "next_question": "The exact single response or interview question to present to the candidate."
         }}
         """
 
@@ -181,30 +200,47 @@ class GeminiService:
         Resume-aware fallback question generator when AI API service is unavailable.
         """
         q_count = len(conversation_history) + 1
-        low_answer = last_answer.lower()
+        low_answer = last_answer.lower().strip()
 
-        if "project" in low_answer or "built" in low_answer or "developed" in low_answer or "created" in low_answer:
-            next_q = "That sounds very interesting! Could you describe the biggest technical challenge you faced while developing that project, and how you solved it?"
-        elif "team" in low_answer or "worked with" in low_answer or "lead" in low_answer:
-            next_q = "How did you manage communication and handle differences of opinion within your team during that experience?"
-        else:
-            topics = [
-                "Could you walk me through one of your key projects listed on your resume, explaining your role and the technology stack you used?",
-                "I noticed several skills listed on your resume. Which technology or programming language do you enjoy working with the most and why?",
-                "Could you tell me about your internship or practical project experience and what major responsibilities you handled?",
-                "What is an academic or professional achievement you are most proud of, and how did you accomplish it?",
-                "Describe a situation where you encountered a difficult problem or tight deadline. How did you resolve it?",
-                "Why did you choose your degree program, and how has your education prepared you for your career objectives?",
-                "Where do you see yourself professionally in five years, and what skills are you actively focusing on developing?"
-            ]
-            idx = (q_count - 1) % len(topics)
-            next_q = topics[idx]
+        # Handle repeat fallback
+        repeat_phrases = ["repeat", "pardon", "say again", "didn't catch", "didnt catch", "what did you say", "what was the question"]
+        if any(p in low_answer for p in repeat_phrases) and conversation_history:
+            prev_q = conversation_history[-1].get("ai_question")
+            if prev_q:
+                return {
+                    "analysis": {
+                        "grammar_notes": "Candidate requested to repeat the question.",
+                        "fluency_notes": "N/A",
+                        "confidence_notes": "N/A"
+                    },
+                    "next_question": prev_q
+                }
+
+        # Handle unrelated/don't know answer fallback
+        unrelated_phrases = ["don't know", "dont know", "no idea", "skip", "pass", "not sure"]
+        is_unrelated = any(p in low_answer for p in unrelated_phrases)
+
+        # Standard list of topics strictly based on resume context
+        transition_prefix = "No problem! Let's move on. " if is_unrelated else ""
+
+        topics = [
+            "Could you walk me through one of your key projects listed on your resume, explaining your role and the technology stack you used?",
+            "I noticed several skills listed on your resume. Which technology or programming language do you enjoy working with the most and why?",
+            "Could you tell me about your internship or practical project experience and what major responsibilities you handled?",
+            "What is an academic or professional achievement you are most proud of, and how did you accomplish it?",
+            "Could you describe the biggest technical challenge you faced while developing your projects, and how you solved it?",
+            "Looking at the technologies on your resume, how do you keep yourself updated with them?",
+            "Could you discuss a certification or course from your resume and what key concepts you mastered?"
+        ]
+        
+        idx = (q_count - 1) % len(topics)
+        next_q = transition_prefix + topics[idx]
 
         return {
             "analysis": {
-                "grammar_notes": "Good sentence structure and verb tenses.",
-                "fluency_notes": "Fluent, coherent delivery with clear ideas.",
-                "confidence_notes": "Exhibited professional confidence in the response."
+                "grammar_notes": "Good sentence structure.",
+                "fluency_notes": "Fluent delivery.",
+                "confidence_notes": "Exhibited professional confidence."
             },
             "next_question": next_q
         }
