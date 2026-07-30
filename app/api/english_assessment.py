@@ -136,6 +136,7 @@ async def get_current_english_assessment(
     return {
         "status": "IN_PROGRESS",
         "interview_id": str(interview.id),
+        "assignment_id": str(interview.assignment_id) if interview.assignment_id else None,
         "session_id": str(interview.session_id),
         "start_time": interview.start_time.isoformat(),
         "question_number": len(conversations),
@@ -172,7 +173,22 @@ async def start_english_assessment(
             detail="You must successfully complete your Technical Assessment before starting the English Assessment."
         )
 
-    # 2. Check if there is already an active interview
+    # 2. Enforce one-attempt rule: Block starting if candidate already completed English Assessment
+    result_comp = await db.execute(
+        select(EnglishInterview)
+        .where(
+            (EnglishInterview.candidate_id == current_user.id) &
+            (EnglishInterview.status == "COMPLETED")
+        )
+    )
+    completed = result_comp.scalars().first()
+    if completed:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="You have already completed this assessment. Multiple attempts are not allowed."
+        )
+
+    # 3. Check if there is already an active interview
     result_active = await db.execute(
         select(EnglishInterview)
         .where(
@@ -185,7 +201,7 @@ async def start_english_assessment(
         # Redirect candidate to resume the active interview
         return {"message": "Active interview resumed.", "interview_id": str(active.id)}
 
-    # 3. Create new interview session
+    # 4. Create new interview session
     session_id = uuid.uuid4()
     interview = EnglishInterview(
         candidate_id=current_user.id,
@@ -217,6 +233,7 @@ async def start_english_assessment(
     return {
         "status": "IN_PROGRESS",
         "interview_id": str(interview.id),
+        "assignment_id": str(assignment.id),
         "session_id": str(session_id),
         "question_number": 1,
         "ai_question": first_q
@@ -244,6 +261,20 @@ async def respond_english_assessment(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Answer content cannot be empty."
+        )
+
+    # 0. Enforce one-attempt rule: Block response if assessment is completed
+    result_comp = await db.execute(
+        select(EnglishInterview)
+        .where(
+            (EnglishInterview.candidate_id == current_user.id) &
+            (EnglishInterview.status == "COMPLETED")
+        )
+    )
+    if result_comp.scalars().first():
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="You have already completed this assessment. Multiple attempts are not allowed."
         )
 
     # 1. Fetch active interview
@@ -423,14 +454,28 @@ async def retry_english_assessment(
     current_user: User = Depends(require_candidate),
     db: AsyncSession = Depends(get_db)
 ):
-    """
-    Deletes the candidate's existing English Interview and conversation history,
-    allowing them to restart the conversational interview from scratch.
-    """
-    # 1. Fetch any existing interview (IN_PROGRESS or COMPLETED)
+    # Enforce one-attempt rule: Block retry if candidate has completed the assessment
+    result_comp = await db.execute(
+        select(EnglishInterview)
+        .where(
+            (EnglishInterview.candidate_id == current_user.id) &
+            (EnglishInterview.status == "COMPLETED")
+        )
+    )
+    completed = result_comp.scalars().first()
+    if completed:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You have already completed this assessment. Multiple attempts are not allowed."
+        )
+
+    # 1. Fetch only IN_PROGRESS interview to reset if needed
     result = await db.execute(
         select(EnglishInterview)
-        .where(EnglishInterview.candidate_id == current_user.id)
+        .where(
+            (EnglishInterview.candidate_id == current_user.id) &
+            (EnglishInterview.status == "IN_PROGRESS")
+        )
     )
     interviews = result.scalars().all()
     
@@ -443,9 +488,6 @@ async def retry_english_assessment(
         # Delete interview record
         await db.delete(interview)
 
-    # 2. Reset the user's english score
-    current_user.english_score = None
-    
     await db.commit()
     
-    return {"status": "RESET", "message": "English assessment successfully reset. You can now start a new interview."}
+    return {"status": "RESET", "message": "In-progress English assessment reset."}

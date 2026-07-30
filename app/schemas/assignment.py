@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime, timezone
 from typing import List, Optional
-from pydantic import BaseModel, Field, ConfigDict, EmailStr, field_serializer
+from pydantic import BaseModel, ConfigDict, EmailStr, field_serializer
 from app.schemas.assessment import AssessmentResponse
 
 class AssignmentCreateRequest(BaseModel):

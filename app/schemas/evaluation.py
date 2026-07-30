@@ -2,7 +2,6 @@ import uuid
 from datetime import datetime
 from typing import List, Optional
 from pydantic import BaseModel, Field, ConfigDict, AliasChoices
-from app.schemas.assessment import AssessmentResponse
 
 class AssessmentStartRequest(BaseModel):
     assignmentId: uuid.UUID
@@ -21,14 +20,14 @@ class AssessmentSubmitRequest(BaseModel):
     warningHistory: Optional[List[str]] = None
 
 class QuestionAnalysis(BaseModel):
-    questionId: str
-    questionText: str
-    type: str  # "MCQ" or "SCENARIO"
-    candidateAnswer: str
-    correctAnswer: str
-    marksAwarded: float
-    maxMarks: float
-    status: str  # "Correct", "Incorrect", "Partially Correct"
+    questionId: Optional[str] = ""
+    questionText: Optional[str] = ""
+    type: Optional[str] = "MCQ"  # "MCQ" or "SCENARIO"
+    candidateAnswer: Optional[str] = ""
+    correctAnswer: Optional[str] = ""
+    marksAwarded: Optional[float] = 0.0
+    maxMarks: Optional[float] = 10.0
+    status: Optional[str] = "Incorrect"  # "Correct", "Incorrect", "Partially Correct"
     feedback: Optional[str] = None
     strengths: Optional[str] = None
     improvements: Optional[str] = None
@@ -91,16 +90,16 @@ class AssessmentResultResponse(BaseModel):
     candidateId: uuid.UUID
     assessmentId: uuid.UUID
     
-    totalQuestions: int
-    correctAnswers: int
-    wrongAnswers: int
-    unansweredQuestions: int
-    marksObtained: float
-    maxMarks: float
-    percentage: float
-    passFail: str
-    timeTaken: int
-    createdAt: datetime
+    totalQuestions: Optional[int] = 0
+    correctAnswers: Optional[int] = 0
+    wrongAnswers: Optional[int] = 0
+    unansweredQuestions: Optional[int] = 0
+    marksObtained: Optional[float] = 0.0
+    maxMarks: Optional[float] = 0.0
+    percentage: Optional[float] = 0.0
+    passFail: Optional[str] = "N/A"
+    timeTaken: Optional[int] = 0
+    createdAt: Optional[datetime] = None
     
     # Auto submission & proctoring fields
     autoSubmitted: Optional[bool] = False

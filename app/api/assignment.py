@@ -13,7 +13,7 @@ from app.schemas.assignment import (
     AssignmentStatusUpdate,
     AssignmentListResponse
 )
-from app.dependencies.auth import require_recruiter, require_candidate, get_current_user
+from app.dependencies.auth import require_recruiter, get_current_user
 
 router = APIRouter(prefix="/api/assignments", tags=["Assignments"])
 
@@ -118,19 +118,34 @@ async def create_assignment(
             detail="Assessment not found"
         )
 
-    # 3. Check duplicate assignment
-    result_dup = await db.execute(
-        select(AssessmentAssignment).where(
+    # 3. Remove any previous assignment & English assessment data for this candidate & assessment to allow clean reassignment
+    from app.database.models import EnglishInterview, EnglishInterviewConversation
+    from sqlalchemy import delete
+
+    prev_eng_res = await db.execute(
+        select(EnglishInterview).where(
+            (EnglishInterview.candidate_id == candidate.id) &
+            (
+                (EnglishInterview.assessment_id == request.assessmentId) |
+                (EnglishInterview.assignment_id.is_not(None))
+            )
+        )
+    )
+    prev_interviews = prev_eng_res.scalars().all()
+    for pi in prev_interviews:
+        await db.execute(
+            delete(EnglishInterviewConversation).where(EnglishInterviewConversation.interview_id == pi.id)
+        )
+        await db.delete(pi)
+
+    candidate.english_score = None
+
+    await db.execute(
+        delete(AssessmentAssignment).where(
             (AssessmentAssignment.assessment_id == request.assessmentId) &
             (AssessmentAssignment.candidate_id == candidate.id)
         )
     )
-    dup = result_dup.scalar_one_or_none()
-    if dup:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Assessment already assigned to candidate"
-        )
 
     # 4. Parse scheduling values
     start_time = None
@@ -449,3 +464,70 @@ async def update_assignment_status(
     await db.commit()
     await db.refresh(assignment)
     return assignment
+
+@router.delete(
+    "/{id}",
+    status_code=status.HTTP_200_OK,
+    summary="Delete an assignment"
+)
+async def delete_assignment(
+    id: str,
+    current_user: User = Depends(require_recruiter),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Deletes an assessment assignment for a candidate at any time.
+    """
+    try:
+        assignment_uuid = uuid.UUID(id)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid assignment ID format"
+        )
+
+    result = await db.execute(
+        select(AssessmentAssignment).where(AssessmentAssignment.id == assignment_uuid)
+    )
+    assignment = result.scalar_one_or_none()
+    if not assignment:
+        return {"message": "Assignment deleted successfully or already removed", "id": id}
+
+    # Decrement candidates_assigned on Assessment if > 0
+    result_asm = await db.execute(
+        select(Assessment).where(Assessment.id == assignment.assessment_id)
+    )
+    assessment = result_asm.scalar_one_or_none()
+    if assessment and assessment.candidates_assigned > 0:
+        assessment.candidates_assigned -= 1
+
+    # Clear candidate's English Assessment records, conversations, transcripts, and scores
+    from app.database.models import EnglishInterview, EnglishInterviewConversation, User
+    from sqlalchemy import delete
+
+    eng_res = await db.execute(
+        select(EnglishInterview).where(
+            (EnglishInterview.candidate_id == assignment.candidate_id) &
+            (
+                (EnglishInterview.assignment_id == assignment.id) |
+                (EnglishInterview.assessment_id == assignment.assessment_id)
+            )
+        )
+    )
+    english_interviews = eng_res.scalars().all()
+    for interview in english_interviews:
+        await db.execute(
+            delete(EnglishInterviewConversation).where(EnglishInterviewConversation.interview_id == interview.id)
+        )
+        await db.delete(interview)
+
+    cand_res = await db.execute(select(User).where(User.id == assignment.candidate_id))
+    candidate = cand_res.scalar_one_or_none()
+    if candidate:
+        candidate.english_score = None
+
+    await db.delete(assignment)
+    await db.commit()
+
+    return {"message": "Assignment deleted successfully", "id": id}
+

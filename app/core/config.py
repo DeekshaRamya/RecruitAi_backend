@@ -9,22 +9,22 @@ def _resolve_database_url() -> str:
     if os.getenv("DATABASE_URL"):
         return os.getenv("DATABASE_URL")
     
-    host = os.getenv("POSTGRES_HOST", "20.112.97.115")
-    port = os.getenv("POSTGRES_PORT", "15432")
-    user = os.getenv("POSTGRES_USER", "appuser")
-    password = os.getenv("POSTGRES_PASSWORD", "FwSysM@y2o26")
-    db = os.getenv("POSTGRES_DB", "onlexam")
+    host = os.getenv("POSTGRES_HOST", "localhost")
+    port = os.getenv("POSTGRES_PORT", "5432")
+    user = os.getenv("POSTGRES_USER", "postgres")
+    password = os.getenv("POSTGRES_PASSWORD", "")
+    db = os.getenv("POSTGRES_DB", "recruitai")
     
     encoded_password = password.replace("@", "%40")
     return f"postgresql+psycopg://{user}:{encoded_password}@{host}:{port}/{db}"
 
 class Settings(BaseModel):
     # Database
-    POSTGRES_HOST: str = Field(default_factory=lambda: os.getenv("POSTGRES_HOST", "20.112.97.115"))
-    POSTGRES_PORT: str = Field(default_factory=lambda: os.getenv("POSTGRES_PORT", "15432"))
-    POSTGRES_USER: str = Field(default_factory=lambda: os.getenv("POSTGRES_USER", "appuser"))
-    POSTGRES_PASSWORD: str = Field(default_factory=lambda: os.getenv("POSTGRES_PASSWORD", "FwSysM@y2o26"))
-    POSTGRES_DB: str = Field(default_factory=lambda: os.getenv("POSTGRES_DB", "onlexam"))
+    POSTGRES_HOST: str = Field(default_factory=lambda: os.getenv("POSTGRES_HOST", "localhost"))
+    POSTGRES_PORT: str = Field(default_factory=lambda: os.getenv("POSTGRES_PORT", "5432"))
+    POSTGRES_USER: str = Field(default_factory=lambda: os.getenv("POSTGRES_USER", "postgres"))
+    POSTGRES_PASSWORD: str = Field(default_factory=lambda: os.getenv("POSTGRES_PASSWORD", ""))
+    POSTGRES_DB: str = Field(default_factory=lambda: os.getenv("POSTGRES_DB", "recruitai"))
     
     DATABASE_URL: str = Field(default_factory=_resolve_database_url)
 

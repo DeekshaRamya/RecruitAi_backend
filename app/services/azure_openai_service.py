@@ -24,6 +24,7 @@ class AzureOpenAIService:
             "You are a principal technical assessment architect who designs high-quality recruitment "
             "evaluations comparable to HackerRank, LeetCode, Codility, Mercer Mettl, and SHL. "
             "You create clear, grammatically precise, professional, and unambiguous questions. "
+            "When generating SQL scenario questions, you MUST strictly use ONLY the real tables and columns from the provided AdventureWorks live database schema (such as Sales.SalesOrderHeader, HumanResources.Employee, etc.). Never invent fake tables like 'dbo.orders', 'users', or 'customers'. "
             "You must return ONLY a JSON object matching the requested schema without any markdown formatting or code blocks."
         )
 
@@ -63,10 +64,15 @@ class AzureOpenAIService:
 
         subjects_str = ", ".join(request.subjects)
 
+        sql_schema_context = ""
+        if any("SQL" in s.upper() for s in request.subjects):
+            from app.services.sql_schema_service import SqlSchemaService
+            sql_schema_context = "\n" + SqlSchemaService.get_live_schema_text() + "\n"
+
         prompt = f"""Generate professional technical recruitment assessment questions based on the following configurations:
 
 Selected Subjects: {subjects_str}
-
+{sql_schema_context}
 QUESTION COUNT & RATIOS:
 - Ideal Total Question Count: ~{target_total} (between 15 and 30 total).
 - MCQ Questions (type "MCQ"): ~{mcq_count} questions ({request.questionDistribution.mcq}%)
@@ -81,35 +87,27 @@ QUALITY, CLARITY & ACCURACY MANDATES (STRICT COMPLIANCE REQUIRED):
    - Avoid vague or incomplete statements. Include full necessary context.
    - Avoid unnecessary technical jargon unless essential to the core skill being evaluated.
    - Do NOT generate duplicate or repetitive questions.
-   - Align difficulty with expectations:
-     * Easy: Core concepts, straightforward wording, minimal reasoning.
-     * Medium: Application of concepts, moderate technical complexity.
-     * Hard: Real-world analytical problems, multi-step edge cases, performance trade-offs.
 
 2. MULTIPLE CHOICE QUESTIONS (MCQs):
-   - Formulate a precise, self-contained question statement (e.g., "Which SQL JOIN returns only the rows that have matching values in both tables?" rather than "What is SQL join?").
-   - Provide exactly 4 meaningful options.
-   - Ensure EXACTLY ONE option is correct, with 3 realistic distractors.
+   - Formulate a precise, self-contained question statement.
+   - Provide exactly 4 meaningful options with EXACTLY ONE correct answer.
    - NEVER use "All of the above", "None of the above", "All of these", or "None of these".
-   - Options must be of similar length and syntactic structure to avoid clue leakage.
-   - Provide a concise, clear "explanation" detailing why the correctAnswer is right (for recruiter review).
 
 3. SCENARIO-BASED & PROGRAMMING QUESTIONS:
    - Must resemble real-world workplace situations.
-   - "scenario": Realistic background context (e.g., "You are working as a Data Analyst in a retail enterprise...").
-   - "problemStatement": Business or technical problem statement detailing inputs, outputs, requirements, and constraints.
+   - "scenario": Realistic background context.
+   - "problemStatement": Business problem statement detailing inputs, outputs, requirements, and constraints.
    - "candidateTask": Explicit, specific task describing what the candidate must write or accomplish.
-   - For SQL questions: Must specify table names, column names, business context, expected output, DDL ("databaseSchema"), and DML ("sampleData").
+   - STRICT SQL MANDATE FOR SQL QUESTIONS:
+     * You MUST generate SQL questions ONLY from the live database schema provided above.
+     * NEVER assume table names or column names, NEVER use generic names (e.g., 'employees', 'orders', 'students'), and NEVER reference tables or columns that do not exist in the schema.
+     * EVERY SQL question MUST explicitly state the schema and table name (e.g. HumanResources.Employee, Person.Person, Sales.SalesOrderHeader, Production.Product) and the exact column names involved.
+     * Include a realistic business scenario, a clear problem statement, exact candidate task, valid solution query ("expectedAnswer"), expected output in a clean tabular format using actual column names ("exampleOutput"), and an explanation of the result ("explanation").
    - For Python/Coding questions: Describe input format, output format, constraints, sample input ("exampleInput"), sample output ("exampleOutput"), and full working solution ("expectedAnswer").
    - "evaluationCriteria": Clear rubric highlighting key evaluation points.
 
-4. APTITUDE QUESTIONS (if Aptitude is selected):
-   - Mathematically accurate with all necessary numerical values, units, and conditions explicitly provided.
-   - Include step-by-step logic in the recruiter "explanation".
-
-5. TOPIC RELEVANCE:
+4. TOPIC RELEVANCE:
    - Every question's "subject" MUST strictly be one of: {request.subjects}.
-   - Topic must accurately describe the specific technical concept tested.
 
 RESPONSE SCHEMA (RETURN RAW CLEAN JSON ONLY):
 {{
@@ -126,19 +124,19 @@ RESPONSE SCHEMA (RETURN RAW CLEAN JSON ONLY):
     }},
     {{
       "subject": "SQL",
-      "topic": "Aggregate Functions & Grouping",
+      "topic": "Filtering & Sorting Employee Data",
       "type": "SCENARIO",
       "difficulty": "Hard",
-      "scenario": "You are a Senior Data Analyst at an e-commerce platform. The auditing team needs to detect customer accounts with duplicate transaction records.",
-      "question": "Write an SQL query to retrieve customer IDs and transaction counts for customers who have more than 1 transaction.",
-      "problemStatement": "In a 'transactions' table with columns (transaction_id INT, customer_id INT, amount DECIMAL(10,2), created_at TIMESTAMP), identify customer_ids with duplicate payments.",
-      "candidateTask": "Write an SQL query grouping by customer_id and applying a HAVING filter to isolate customer_ids with total transactions > 1.",
-      "expectedAnswer": "SELECT customer_id, COUNT(transaction_id) AS total_transactions FROM transactions GROUP BY customer_id HAVING COUNT(transaction_id) > 1;",
-      "evaluationCriteria": "Valid GROUP BY syntax, correct HAVING aggregation filter, and accurate select projection.",
-      "correctAnswer": "SELECT customer_id, COUNT(transaction_id) AS total_transactions FROM transactions GROUP BY customer_id HAVING COUNT(transaction_id) > 1;",
-      "explanation": "GROUP BY customer_id aggregates rows by user, while HAVING COUNT(...) > 1 filters for groups containing multiple records.",
-      "databaseSchema": ["CREATE TABLE transactions (transaction_id INT PRIMARY KEY, customer_id INT, amount DECIMAL(10,2), created_at TIMESTAMP);"],
-      "sampleData": ["INSERT INTO transactions VALUES (1, 101, 49.99, '2026-07-01 10:00:00'), (2, 101, 49.99, '2026-07-01 10:05:00');"]
+      "scenario": "You are a Senior Data Analyst working with the AdventureWorks Human Resources department. Management needs an accurate list of active salaried employees to analyze organizational demographics and vacation allowances.",
+      "question": "Write an SQL query to retrieve the BusinessEntityID, NationalIDNumber, JobTitle, and VacationHours for all salaried employees whose current record is active.",
+      "problemStatement": "Using the 'HumanResources.Employee' table from the AdventureWorks schema (columns: BusinessEntityID, NationalIDNumber, JobTitle, SalariedFlag, CurrentFlag, VacationHours), retrieve all employees where SalariedFlag = 1 and CurrentFlag = 1, ordered descending by VacationHours.",
+      "candidateTask": "Write a clean T-SQL SELECT query against HumanResources.Employee filtering by SalariedFlag = 1 and CurrentFlag = 1, sorting by VacationHours DESC.",
+      "expectedAnswer": "SELECT BusinessEntityID, NationalIDNumber, JobTitle, VacationHours FROM HumanResources.Employee WHERE SalariedFlag = 1 AND CurrentFlag = 1 ORDER BY VacationHours DESC;",
+      "evaluationCriteria": "Correct usage of HumanResources.Employee schema/table name, valid WHERE clauses on SalariedFlag and CurrentFlag, and proper ORDER BY descending.",
+      "correctAnswer": "SELECT BusinessEntityID, NationalIDNumber, JobTitle, VacationHours FROM HumanResources.Employee WHERE SalariedFlag = 1 AND CurrentFlag = 1 ORDER BY VacationHours DESC;",
+      "explanation": "Filtering by SalariedFlag = 1 and CurrentFlag = 1 isolates active salaried staff, while ORDER BY VacationHours DESC lists employees with the highest leave accumulation first.",
+      "databaseSchema": ["-- Schema table: HumanResources.Employee (BusinessEntityID INT PK, NationalIDNumber NVARCHAR, JobTitle NVARCHAR, SalariedFlag BIT, CurrentFlag BIT, VacationHours SMALLINT)"],
+      "sampleData": ["-- Live data exists on the connected AdventureWorks SQL Server"]
     }}
   ]
 }}"""
@@ -240,12 +238,25 @@ RESPONSE SCHEMA (RETURN RAW CLEAN JSON ONLY):
                 if q.get("sampleData") and isinstance(q.get("sampleData"), str):
                     q["sampleData"] = [q.get("sampleData")]
 
-                # SQL specific DDL/DML fallback
+                # SQL specific validation against live AdventureWorks schema (No hardcoded/mock tables!)
                 if q["subject"].upper() == "SQL":
-                    if not q.get("databaseSchema"):
-                        q["databaseSchema"] = [f"-- Schema for {q['topic']}\nCREATE TABLE evaluation_records (id INT PRIMARY KEY, name VARCHAR(100), status VARCHAR(50), score INT);"]
-                    if not q.get("sampleData"):
-                        q["sampleData"] = [f"-- Sample dataset\nINSERT INTO evaluation_records VALUES (1, 'Sample Record', 'Active', 90);"]
+                    from app.services.sql_schema_service import SqlSchemaService
+                    live_schema = SqlSchemaService.get_live_schema()
+                    tables_map = live_schema.get("tables_map", {})
+
+                    if not q.get("databaseSchema") or any("evaluation_records" in str(s).lower() for s in q.get("databaseSchema", [])):
+                        emp_info = tables_map.get("HumanResources.Employee")
+                        if emp_info and "columns" in emp_info:
+                            cols = ", ".join([f"{c['name']} {c['type']}{' PRIMARY KEY' if c.get('is_pk') else ''}" for c in emp_info["columns"][:15]])
+                            q["databaseSchema"] = [f"-- Live Schema from AdventureWorks Database\nCREATE TABLE HumanResources.Employee ({cols});"]
+                        else:
+                            q["databaseSchema"] = [
+                                "-- Live Schema from AdventureWorks Database\n"
+                                "CREATE TABLE HumanResources.Employee (BusinessEntityID INT PRIMARY KEY, NationalIDNumber NVARCHAR, JobTitle NVARCHAR, HireDate DATE, MaritalStatus NCHAR, Gender NCHAR);"
+                            ]
+
+                    if not q.get("sampleData") or any("evaluation_records" in str(s).lower() or "sample record" in str(s).lower() for s in q.get("sampleData", [])):
+                        q["sampleData"] = ["-- Sample data is dynamically queried directly from the connected AdventureWorks database."]
 
             cleaned_questions.append(q)
 

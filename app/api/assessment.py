@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, status, HTTPException
-from typing import List, Optional
+from typing import List
 import uuid
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -13,7 +13,7 @@ from app.schemas.assessment import (
     AssessmentUpdateRequest
 )
 from app.services.assessment_generation_service import AssessmentGenerationService
-from app.dependencies.auth import require_recruiter
+from app.dependencies.auth import require_recruiter, get_current_user
 
 # We define both singular and plural routers for compatibility and specifications
 router = APIRouter(prefix="/api/assessment", tags=["Assessments"])
@@ -53,13 +53,25 @@ async def _get_all_assessments(db: AsyncSession):
     result = await db.execute(
         select(Assessment)
         .where(Assessment.status.in_(valid_statuses))
-        .order_by(Assessment.id.desc())
+        .order_by(Assessment.created_date.desc(), Assessment.id.desc())
     )
-    assessments = result.scalars().all()
+    assessments = result.scalars().unique().all()
+
+    unique_assessments = []
+    seen_ids = set()
+    seen_names = set()
     for asm in assessments:
-        if asm.questions:
-            asm.questions = sort_assessment_questions(asm.questions)
-    return assessments
+        asm_id = str(asm.id)
+        name_key = asm.name.strip().lower() if asm.name else ""
+        if asm_id not in seen_ids and (not name_key or name_key not in seen_names):
+            seen_ids.add(asm_id)
+            if name_key:
+                seen_names.add(name_key)
+            if asm.questions:
+                asm.questions = sort_assessment_questions(asm.questions)
+            unique_assessments.append(asm)
+
+    return unique_assessments
 
 @router.get(
     "",
@@ -117,6 +129,28 @@ async def get_assessment_by_id(
 
 async def _save_assessment_data(request: AssessmentSaveRequest, db: AsyncSession):
     sorted_q = sort_assessment_questions(request.questions)
+
+    # Check if an assessment with the exact same name and active status already exists to prevent duplicate insertion
+    if request.name:
+        name_clean = request.name.strip()
+        existing = await db.execute(
+            select(Assessment).where(
+                Assessment.name.ilike(name_clean),
+                Assessment.status.in_(["Active", "ACTIVE", "Created", "CREATED"])
+            ).order_by(Assessment.created_date.desc())
+        )
+        existing_asm = existing.scalars().first()
+        if existing_asm:
+            existing_asm.questions = sorted_q
+            existing_asm.subjects = request.subjects
+            existing_asm.difficulty = request.difficulty
+            existing_asm.duration = request.duration
+            existing_asm.questions_count = request.questionsCount
+            existing_asm.created_date = request.createdDate
+            await db.commit()
+            await db.refresh(existing_asm)
+            return existing_asm
+
     db_assessment = Assessment(
         name=request.name,
         subjects=request.subjects,
@@ -218,7 +252,7 @@ async def _delete_assessment_data(id: str, db: AsyncSession):
     except ValueError:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid assessment ID format")
 
-    from app.database.models import AssessmentAssignment
+    from app.database.models import AssessmentAssignment, EnglishInterview, EnglishInterviewConversation, User
     from sqlalchemy import delete
 
     result = await db.execute(select(Assessment).where(Assessment.id == assessment_uuid))
@@ -232,6 +266,26 @@ async def _delete_assessment_data(id: str, db: AsyncSession):
             assessment_res = await db.execute(select(Assessment).where(Assessment.id == asgn.assessment_id))
             assessment = assessment_res.scalar_one_or_none()
             if not assessment:
+                # Clear EnglishInterview records for this assignment & candidate
+                eng_res = await db.execute(
+                    select(EnglishInterview).where(
+                        (EnglishInterview.assignment_id == asgn.id) |
+                        (EnglishInterview.candidate_id == asgn.candidate_id)
+                    )
+                )
+                interviews = eng_res.scalars().all()
+                for i in interviews:
+                    await db.execute(
+                        delete(EnglishInterviewConversation).where(EnglishInterviewConversation.interview_id == i.id)
+                    )
+                    await db.delete(i)
+
+                # Reset candidate english_score
+                cand_res = await db.execute(select(User).where(User.id == asgn.candidate_id))
+                cand = cand_res.scalar_one_or_none()
+                if cand:
+                    cand.english_score = None
+
                 await db.delete(asgn)
                 await db.commit()
                 return {"message": "Assessment assignment deleted successfully", "id": id}
@@ -240,12 +294,67 @@ async def _delete_assessment_data(id: str, db: AsyncSession):
         # Idempotent deletion: if assessment is already deleted or not found, return 200 OK
         return {"message": "Assessment deleted successfully or already removed", "id": id}
 
+    # Find all assignments linked to this assessment before deleting
+    assignments_res = await db.execute(
+        select(AssessmentAssignment).where(AssessmentAssignment.assessment_id == assessment.id)
+    )
+    assignments = assignments_res.scalars().all()
+    assignment_ids = [asgn.id for asgn in assignments]
+    candidate_ids = list({asgn.candidate_id for asgn in assignments})
+
+    # Delete all associated EnglishInterview records and conversations
+    if assessment.id:
+        eng_res = await db.execute(
+            select(EnglishInterview).where(
+                (EnglishInterview.assessment_id == assessment.id) |
+                (EnglishInterview.assignment_id.in_(assignment_ids) if assignment_ids else False) |
+                (EnglishInterview.candidate_id.in_(candidate_ids) if candidate_ids else False)
+            )
+        )
+        english_interviews = eng_res.scalars().all()
+        for interview in english_interviews:
+            await db.execute(
+                delete(EnglishInterviewConversation).where(EnglishInterviewConversation.interview_id == interview.id)
+            )
+            await db.delete(interview)
+
+    # Reset english_score for affected candidates
+    if candidate_ids:
+        cand_list = await db.execute(select(User).where(User.id.in_(candidate_ids)))
+        for cand in cand_list.scalars().all():
+            cand.english_score = None
+
     # Delete associated assignments explicitly to ensure clean deletion
     await db.execute(delete(AssessmentAssignment).where(AssessmentAssignment.assessment_id == assessment.id))
 
     await db.delete(assessment)
     await db.commit()
     return {"message": "Assessment deleted successfully", "id": id}
+
+@router.get(
+    "/live-schema",
+    summary="Get live database schema for SQL generation and visual inspection"
+)
+@plural_router.get(
+    "/live-schema",
+    summary="Get live database schema for SQL generation and visual inspection"
+)
+async def get_live_sql_schema(
+    force_refresh: bool = False,
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Returns the live AdventureWorks database schema (schemas, tables, columns, data types, primary keys).
+    """
+    from app.services.sql_schema_service import SqlSchemaService
+    schema_info = SqlSchemaService.get_live_schema(force_refresh=force_refresh)
+    schema_text = SqlSchemaService.get_live_schema_text(force_refresh=force_refresh)
+    return {
+        "success": True,
+        "database": schema_info.get("database", "AdventureWorks"),
+        "tables_map": schema_info.get("tables_map", {}),
+        "schema_prompt_text": schema_text
+    }
 
 @router.delete(
     "/{id}",

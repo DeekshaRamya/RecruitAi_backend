@@ -363,10 +363,34 @@ if __name__ == '__main__':
 
                 if res.status_code == 200:
                     data = res.json()
+                    is_success = data.get("success", True)
+                    err_msg = data.get("error")
+
+                    if not is_success or err_msg:
+                        clean_err = str(err_msg or "SQL Execution Error")
+                        # Clean up DB-Lib error wrappers if present
+                        if "DB-Lib error" in clean_err or "General SQL Server error" in clean_err:
+                            clean_err = re.sub(r'^\([^,]+,\s*b["\']?', '', clean_err)
+                            clean_err = re.sub(r'["\']?\)$', '', clean_err)
+                            clean_err = clean_err.replace('\\n', ' ').strip()
+                        return {
+                            "output": data,
+                            "columns": [],
+                            "rows": [],
+                            "rowCount": 0,
+                            "executionTime": round(data.get("executionTime", execution_time * 1000), 2),
+                            "stdout": "",
+                            "runtime_error": clean_err,
+                            "syntax_error": None,
+                            "status": "Runtime Error"
+                        }
+
                     columns = data.get("columns", [])
                     rows = data.get("rows", [])
+                    if not columns and rows and isinstance(rows[0], dict):
+                        columns = list(rows[0].keys())
                     row_count = data.get("rowCount", len(rows))
-                    exec_time_ms = data.get("executionTime", execution_time * 1000)
+                    exec_time_ms = round(data.get("executionTime", execution_time * 1000), 2)
 
                     return {
                         "output": data,
@@ -385,7 +409,7 @@ if __name__ == '__main__':
                         "columns": [],
                         "rows": [],
                         "rowCount": 0,
-                        "executionTime": execution_time,
+                        "executionTime": execution_time * 1000,
                         "stdout": "",
                         "runtime_error": f"SQL Error ({res.status_code}): {res.text}",
                         "syntax_error": None,
