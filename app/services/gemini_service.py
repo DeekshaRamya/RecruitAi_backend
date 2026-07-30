@@ -14,12 +14,12 @@ class GeminiService:
             import os
             self.api_key = os.getenv("GEMINI_API_KEY", "")
         
-        self.model = "gemini-3.5-flash"
+        self.model = "gemini-2.0-flash"
         self.base_url = f"https://generativelanguage.googleapis.com/v1beta/models/{self.model}:generateContent"
 
     async def _call_ai(self, prompt: str, system_instruction: Optional[str] = None, json_mode: bool = False) -> str:
         """
-        Executes AI completion prioritizing Gemini API (gemini-3.5-flash), with Azure OpenAI as fallback.
+        Executes AI completion prioritizing Gemini API (gemini-2.0-flash), with Azure OpenAI as fallback.
         """
         # 1. Try Gemini API first if API key is present
         if self.api_key:
@@ -41,7 +41,7 @@ class GeminiService:
                     payload["generationConfig"] = {"responseMimeType": "application/json"}
 
                 async with httpx.AsyncClient() as client:
-                    response = await client.post(url, json=payload, headers=headers, timeout=45.0)
+                    response = await client.post(url, json=payload, headers=headers, timeout=10.0)
                     if response.status_code == 200:
                         data = response.json()
                         text = data["candidates"][0]["content"]["parts"][0]["text"]
@@ -51,12 +51,13 @@ class GeminiService:
             except Exception as e:
                 logger.warning(f"Gemini API call failed: {e}. Attempting Azure OpenAI fallback...")
 
-        # 2. Fallback to Azure OpenAI if configured
-        if getattr(settings, "AZURE_OPENAI_ENDPOINT", None):
+        # 2. Fallback to Azure OpenAI if configured with API key
+        if getattr(settings, "AZURE_OPENAI_ENDPOINT", None) and getattr(settings, "AZURE_OPENAI_API_KEY", None):
             try:
+                import asyncio
                 from app.core.azure_openai import AzureOpenAIClient
                 azure_client = AzureOpenAIClient()
-                result = await azure_client.generate_chat_completion(prompt, system_instruction)
+                result = await asyncio.wait_for(azure_client.generate_chat_completion(prompt, system_instruction), timeout=8.0)
                 if result and result.strip():
                     return result.strip()
             except Exception as e:
@@ -66,28 +67,32 @@ class GeminiService:
 
     async def generate_first_question(self, candidate_name: str, resume_text: str) -> str:
         """
-        Generates a personalized, concise, natural introductory question based on the candidate's uploaded resume.
+        Generates a personalized, concise, natural introductory question based STRICTLY on the candidate's uploaded resume.
         """
         system_instruction = (
-            "You are a professional corporate HR Manager conducting a real-time voice interview. "
-            "Your tone is warm, natural, and conversational. "
-            "CRITICAL: Keep your response very short (1 to 2 sentences maximum, under 30 words total). "
-            "Do NOT give long intros, multi-paragraph welcomes, or list instructions. "
-            "Welcome the candidate briefly by name and ask exactly ONE clear introductory question."
+            "You are an elite corporate HR Manager conducting a real-time voice interview. "
+            "Your tone is warm, professional, and conversational. "
+            "MANDATORY RULE: You MUST ask interview questions based ONLY on the candidate's uploaded resume text provided. "
+            "First, thoroughly read and comprehend the candidate's uploaded resume content. "
+            "Then, greet the candidate briefly by name and ask exactly ONE clear question directly referencing a specific project, skill, or experience listed in their uploaded resume. "
+            "Keep your response under 30 words so it sounds completely natural when spoken out loud."
         )
 
         prompt = f"""
         Candidate Name: {candidate_name}
-        Candidate Resume Information:
+
+        Uploaded Candidate Resume Content:
         \"\"\"
         {resume_text}
         \"\"\"
 
         Task:
-        1. Greet {candidate_name} briefly by name in 1 short sentence.
-        2. Ask ONE concise introductory question directly based on their resume background or technical skills.
-        
-        Keep the entire output under 30 words so it sounds completely natural when spoken out loud in a real-time HR interview.
+        1. Read and understand the candidate's uploaded resume content above thoroughly.
+        2. Greet {candidate_name} briefly by name in 1 short sentence.
+        3. Ask ONE concise question derived ONLY and directly from a specific project, technical skill, role, or experience stated in their uploaded resume.
+        4. Do NOT ask generic questions unrelated to their resume. The question MUST explicitly reference their resume content.
+
+        Keep the total response under 30 words for voice synthesis.
         """
         try:
             return await self._call_ai(prompt, system_instruction)
@@ -95,20 +100,22 @@ class GeminiService:
             logger.warning(f"Failed to generate first question via AI API: {e}. Using personalized fallback.")
             return (
                 f"Hello {candidate_name}! Welcome to your HR interview. "
-                f"To get started, could you briefly introduce yourself and share an overview of your background?"
+                f"I reviewed your resume — could you share an overview of your top technical project listed on your resume?"
             )
 
     async def generate_next_question(self, resume_text: str, conversation_history: List[Dict[str, str]], last_answer: str) -> Dict[str, Any]:
         """
-        Analyzes candidate's last response and resume details to generate the next personalized interview question or follow-up question.
+        Analyzes candidate's last response and resume details to generate the next personalized interview question based STRICTLY on their uploaded resume.
         Returns a JSON with analysis notes and the next question string.
         """
         system_instruction = (
             "You are an elite corporate HR Manager conducting a real-time voice interview. "
-            "Your tone must be natural, concise, and conversational like a real HR interviewer on a voice call. "
-            "CRITICAL: Keep the next question direct, natural, and under 25-30 words so it sounds smooth when spoken out loud. "
-            "You must respond ONLY with a valid JSON object matching the requested schema. "
-            "You must ask exactly ONE question at a time."
+            "Your tone must be natural, concise, and conversational. "
+            "MANDATORY RULE: Every interview question MUST be derived STRICTLY and ONLY from the candidate's uploaded resume text and their previous answers. "
+            "First, thoroughly comprehend the candidate's uploaded resume context. "
+            "Ensure you do NOT ask generic or off-topic questions — every question must focus on specific projects, technologies, tools, skills, or roles from their uploaded resume. "
+            "Keep the question direct, natural, and under 25-30 words. "
+            "Respond ONLY with a valid JSON object matching the requested schema."
         )
 
         formatted_history = []
@@ -120,7 +127,7 @@ class GeminiService:
         q_num = len(conversation_history) + 1
 
         prompt = f"""
-        Candidate Resume Information:
+        Uploaded Candidate Resume Content:
         \"\"\"
         {resume_text}
         \"\"\"
@@ -132,23 +139,16 @@ class GeminiService:
         \"{last_answer}\"
 
         Task:
-        1. Understand and analyze the candidate's latest answer for:
-           - Grammar: Check tense correctness, subject-verb agreement, sentence structures.
-           - Fluency: Assess coherence, organization of thoughts, linking words.
-           - Confidence & Vocabulary: Evaluate expressiveness, professional vocabulary, self-assurance.
+        1. Understand and analyze the candidate's latest answer for grammar, fluency, and confidence.
         
-        2. Generate Question {q_num} for the interview.
-           RULES FOR PERSONALIZED QUESTION GENERATION:
-           - Priority 1 (Follow-up): If the candidate's latest answer mentioned a specific project, technical obstacle, team role, or achievement, generate an intelligent FOLLOW-UP question directly related to their response (e.g. "What was your specific contribution to that project?", "What was the biggest technical challenge you faced and how did you overcome it?", "Why did you choose that tech stack?", "How did you optimize performance or measure results?").
-           - Priority 2 (Resume Deep Dive): If a follow-up is not required, select an unasked section directly from their resume:
-             * Projects: Ask them to explain a specific project from their resume, their role, challenges faced, technologies used, or what improvements they would make.
-             * Skills & Technologies: Ask about a specific skill or programming language listed on their resume (e.g. "I noticed you listed Python on your resume. Can you describe a project where you used Python?", "How comfortable are you with SQL/React?", "Which technology do you enjoy working with most and why?").
-             * Internship & Experience: Ask about responsibilities handled, key learnings, or challenges during their internship or past experience.
-             * Education: Ask about their degree choice, favorite subjects, or key academic learnings.
-             * Certifications & Achievements: Ask why they pursued a specific certification or about an achievement they are proud of.
-             * Career Goals & Strengths: Ask where they see themselves in five years, what motivates them, or an example of a time they solved a difficult problem or showed leadership.
-           - Priority 3 (Fallback): If resume info is minimal, ask standard open-ended HR communication questions.
-           - Make sure questions are conversational, open-ended, and do NOT repeat previous questions.
+        2. Generate Question {q_num} for the interview:
+           STRICT RESUME QUESTION RULES:
+           - The question MUST be based ONLY on the candidate's uploaded resume content and their previous answers.
+           - Deep-dive into specific projects, technologies/tools used, key responsibilities, challenges faced, or achievements listed in their uploaded resume.
+           - Make sure the AI understands the candidate's background context completely before asking.
+           - Do NOT ask generic questions unrelated to their resume background.
+           - Keep the question direct and concise (under 25-30 words) for natural voice playback.
+           - Do NOT repeat previously asked questions.
 
         You MUST return a valid JSON object matching this schema:
         {{
