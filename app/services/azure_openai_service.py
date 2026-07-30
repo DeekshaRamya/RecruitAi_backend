@@ -1,6 +1,6 @@
 import json
 import logging
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 from app.core.azure_openai import AzureOpenAIClient
 from app.schemas.assessment import AssessmentGenerateRequest
 from app.schemas.interview import InterviewGenerateRequest, InterviewEvaluateRequest
@@ -11,20 +11,26 @@ class AzureOpenAIService:
     def __init__(self):
         self.client = AzureOpenAIClient()
 
-    async def generate_questions(self, request: AssessmentGenerateRequest) -> List[Dict[str, Any]]:
+    async def generate_questions(
+        self, 
+        request: AssessmentGenerateRequest,
+        existing_questions: Optional[List[str]] = None
+    ) -> List[Dict[str, Any]]:
         """
-        Builds the prompt, calls the Azure OpenAI API client, cleans the response,
-        and parses & validates it into high-quality question objects.
+        Builds the prompt with a dynamic uniqueness seed and existing assessment exclusions,
+        calls Azure OpenAI API client, cleans the response, and parses & validates it into high-quality,
+        non-repetitive question objects.
         """
         # 1. Dynamically construct prompt
-        prompt = self._build_prompt(request)
+        prompt = self._build_prompt(request, existing_questions=existing_questions)
         logger.info(f"Generated Prompt:\n{prompt}")
 
         system_message = (
-            "You are a principal technical assessment architect who designs high-quality recruitment "
-            "evaluations comparable to HackerRank, LeetCode, Codility, Mercer Mettl, and SHL. "
-            "You create clear, grammatically precise, professional, and unambiguous questions. "
-            "When generating SQL scenario questions, you MUST strictly use ONLY the real tables and columns from the provided AdventureWorks live database schema (such as Sales.SalesOrderHeader, HumanResources.Employee, etc.). Never invent fake tables like 'dbo.orders', 'users', or 'customers'. "
+            "You are a principal technical assessment architect who designs high-quality, completely unique, "
+            "and non-repetitive recruitment evaluations comparable to HackerRank, LeetCode, Codility, Mercer Mettl, and SHL. "
+            "Every assessment you generate MUST contain brand new, original questions with fresh wording, diverse business scenarios, "
+            "distinct code examples, and varied problem framing. Never repeat or reuse standard stock questions from previous runs. "
+            "When generating SQL scenario questions, you MUST strictly use ONLY the real tables and columns from the provided AdventureWorks live database schema. "
             "You must return ONLY a JSON object matching the requested schema without any markdown formatting or code blocks."
         )
 
@@ -46,12 +52,21 @@ class AzureOpenAIService:
         # 4. Validate and sanitize generated questions for strict quality compliance
         return self._clean_and_validate_questions(data["questions"], request.subjects)
 
-    def _build_prompt(self, request: AssessmentGenerateRequest) -> str:
+    def _build_prompt(
+        self, 
+        request: AssessmentGenerateRequest,
+        existing_questions: Optional[List[str]] = None
+    ) -> str:
         """
         Constructs a comprehensive, high-quality prompt for generating recruitment assessment questions.
-        Enforces clear wording, realistic workplace scenarios, HackerRank/LeetCode quality standards,
+        Enforces unique question generation, clear wording, realistic workplace scenarios, HackerRank/LeetCode standards,
         strict distractor guidelines, and topic relevance.
         """
+        import uuid
+        import time
+
+        unique_generation_seed = f"gen-{uuid.uuid4().hex[:12]}-{int(time.time()*1000)}"
+
         num_subjects = len(request.subjects)
         target_total = request.totalQuestions or (15 if num_subjects == 1 else (20 if num_subjects == 2 else 25))
 
@@ -69,33 +84,46 @@ class AzureOpenAIService:
             from app.services.sql_schema_service import SqlSchemaService
             sql_schema_context = "\n" + SqlSchemaService.get_live_schema_text() + "\n"
 
+        exclusion_context = ""
+        if existing_questions:
+            clean_ex = [f"- {q}" for q in existing_questions if q and len(q.strip()) > 5]
+            if clean_ex:
+                ex_items = "\n".join(clean_ex[:40])
+                exclusion_context = f"\nEXISTING ASSESSMENT QUESTIONS TO STRICTLY EXCLUDE (DO NOT REUSE OR REPEAT ANY OF THESE):\n{ex_items}\n"
+
         prompt = f"""Generate professional technical recruitment assessment questions based on the following configurations:
 
+UNIQUE ASSESSMENT GENERATION SEED: {unique_generation_seed}
 Selected Subjects: {subjects_str}
 {sql_schema_context}
+{exclusion_context}
 QUESTION COUNT & RATIOS:
 - Ideal Total Question Count: ~{target_total} (between 15 and 30 total).
 - MCQ Questions (type "MCQ"): ~{mcq_count} questions ({request.questionDistribution.mcq}%)
 - Scenario-Based Questions (type "SCENARIO"): ~{scenario_count} questions ({request.questionDistribution.scenario}%)
 - Difficulty Level Ratios: Easy ~{easy_count} ({request.difficultyDistribution.easy}%), Medium ~{medium_count} ({request.difficultyDistribution.medium}%), Hard ~{hard_count} ({request.difficultyDistribution.hard}%)
 
-QUALITY, CLARITY & ACCURACY MANDATES (STRICT COMPLIANCE REQUIRED):
+CRITICAL QUESTION NOVELTY & UNIQUENESS MANDATE (STRICT COMPLIANCE REQUIRED):
+1. NO DUPLICATE OR REPETITIVE QUESTIONS:
+   - Generate a COMPLETELY NEW AND UNIQUE set of questions for this assessment session.
+   - Do NOT reuse identical or highly similar questions, examples, or code snippets from previous assessment generations.
+   - Vary the question wording, contextual framing, problem scenarios (e.g. e-commerce, logistics, fintech, healthcare, HR analytics, cloud engineering), variable names, constraints, and edge cases.
+   - Ensure every question tests depth and understanding from a fresh perspective while strictly remaining within the requested subjects: {request.subjects}.
 
-1. GENERAL QUESTION EXCELLENCE & CLARITY:
+2. GENERAL QUESTION EXCELLENCE & CLARITY:
    - Write in simple, clear, grammatically correct professional English.
    - Every question must be unambiguous with exactly ONE correct interpretation.
    - Avoid vague or incomplete statements. Include full necessary context.
    - Avoid unnecessary technical jargon unless essential to the core skill being evaluated.
-   - Do NOT generate duplicate or repetitive questions.
 
-2. MULTIPLE CHOICE QUESTIONS (MCQs):
-   - Formulate a precise, self-contained question statement.
+3. MULTIPLE CHOICE QUESTIONS (MCQs):
+   - Formulate a precise, self-contained question statement with a novel context or application angle.
    - Provide exactly 4 meaningful options with EXACTLY ONE correct answer.
    - NEVER use "All of the above", "None of the above", "All of these", or "None of these".
 
-3. SCENARIO-BASED & PROGRAMMING QUESTIONS:
-   - Must resemble real-world workplace situations.
-   - "scenario": Realistic background context.
+4. SCENARIO-BASED & PROGRAMMING QUESTIONS:
+   - Must resemble real-world workplace situations with varied business domain contexts.
+   - "scenario": Realistic background context (finance, supply chain, user behavior analytics, etc.).
    - "problemStatement": Business problem statement detailing inputs, outputs, requirements, and constraints.
    - "candidateTask": Explicit, specific task describing what the candidate must write or accomplish.
    - STRICT SQL MANDATE FOR SQL QUESTIONS:
@@ -106,7 +134,7 @@ QUALITY, CLARITY & ACCURACY MANDATES (STRICT COMPLIANCE REQUIRED):
    - For Python/Coding questions: Describe input format, output format, constraints, sample input ("exampleInput"), sample output ("exampleOutput"), and full working solution ("expectedAnswer").
    - "evaluationCriteria": Clear rubric highlighting key evaluation points.
 
-4. TOPIC RELEVANCE:
+5. TOPIC RELEVANCE:
    - Every question's "subject" MUST strictly be one of: {request.subjects}.
 
 RESPONSE SCHEMA (RETURN RAW CLEAN JSON ONLY):
@@ -417,52 +445,68 @@ Response Schema:
         return prompt
 
 
-    async def evaluate_assessment_answer(self, question: str, scenario: str, correct_answer: str, candidate_answer: str) -> Dict[str, Any]:
+    async def evaluate_assessment_answer(
+        self,
+        question: str,
+        scenario: str,
+        correct_answer: str,
+        candidate_answer: str,
+        question_type: str = "SCENARIO"
+    ) -> Dict[str, Any]:
         """
-        Evaluates a candidate's descriptive or scenario-based assessment answer using Azure OpenAI.
+        Evaluates a candidate's answer to a technical assessment question by comparing it against
+        the ideal reference answer across 4 key dimensions: Semantic Similarity, Correctness, Completeness, and Relevance.
         """
-        prompt = f"""Evaluate the candidate's answer to the following scenario-based assessment question:
+        prompt = f"""You are an expert AI assessment evaluator. Your task is to score a candidate's technical response and provide detailed feedback by comparing it against a reference answer.
 
-Scenario: {scenario}
-Question: {question}
-Reference Correct Answer:
+Assessment Context / Question: {question}
+Scenario Context: {scenario if scenario else "N/A"}
+Question Type: {question_type}
+
+Reference Answer (AI-generated Benchmark Response):
 {correct_answer}
 
-Candidate's Answer:
+Candidate's Answer (Response Being Evaluated):
 {candidate_answer}
 
-CRITICAL RULES AND CONSTRAINTS (YOU MUST COMPLY WITH ALL RULES):
-1. Return ONLY valid JSON. Do NOT wrap the JSON in markdown code blocks like ```json or ```. Return the raw JSON string directly.
-2. Compare the Candidate Answer with the Recruiter's Correct Answer. Do NOT perform only an exact text match; evaluate semantic similarity. Accept answers that have the same meaning even if the wording is different.
-3. Consider:
-   - Correct concepts
-   - Technical accuracy
-   - Completeness
-   - Relevance
-   - Missing important points
-4. Grade the answer on a scale of 0 to 100 in "score".
-5. Set "similarity_score" as the semantic similarity percentage (0-100%).
-6. "status" must be exactly one of: "Correct" (for similarity_score >= 80), "Partially Correct" (for similarity_score between 40 and 79), or "Incorrect" (for similarity_score < 40).
-7. "ai_explanation" must be a constructive evaluation feedback and explanation.
-8. "strengths" must describe what the candidate did well.
-9. "missing_points" must list any missing important points (use "None" if there are none).
-10. "suggested_improvement" must provide actionable suggestions on how to improve.
-11. The JSON structure must match the schema below exactly.
+EVALUATION DIMENSIONS (SYSTEMATICALLY COMPARE & WEIGHT):
+1. Semantic Similarity: How well does the candidate's answer align with the core concepts and ideas in the reference answer, even if worded differently?
+2. Correctness: Are the facts, logic, syntax, and technical details accurate? Do they contain errors or misconceptions?
+3. Completeness: Does the candidate cover all key points, edge cases, and depth required, or are there significant gaps?
+4. Relevance: How directly does the answer address what was asked? Is there unnecessary information or off-topic content?
+
+SCORING APPROACH:
+- Assign an overall score on a 0-100 scale in "score" and "similarity_score".
+- Set "status" to:
+  * "Correct" if score >= 80
+  * "Partially Correct" if score is between 40 and 79
+  * "Incorrect" if score < 40
+- Justify the score by explaining performance across each of the 4 dimensions in "ai_explanation".
+
+FEEDBACK STRUCTURE:
+- "ai_explanation": Comprehensive analysis synthesizing performance across Semantic Similarity, Correctness, Completeness, and Relevance.
+- "strengths": Specific details of what the candidate did well and core technical strengths demonstrated.
+- "missing_points": Missing requirements, logical/syntactical errors, or gaps across the 4 dimensions.
+- "suggested_improvement": Specific, actionable feedback guiding how the candidate can improve their response or solution.
+
+CRITICAL RULES:
+1. Return ONLY a raw valid JSON object. Do NOT wrap in markdown code blocks.
+2. The JSON structure must match the schema below.
 
 Response Schema:
 {{
-  "similarity_score": 96,
-  "score": 96,
+  "similarity_score": 85,
+  "score": 85,
   "status": "Correct",
-  "ai_explanation": "The candidate understands the concept correctly. The explanation matches the expected answer.",
-  "strengths": "Understands the concept of Virtual DOM and updates.",
-  "missing_points": "None",
-  "suggested_improvement": "Could mention how Virtual DOM minimizes direct browser layout recalculations."
+  "ai_explanation": "Detailed evaluation across Semantic Similarity, Correctness, Completeness, and Relevance explaining why 85/100 marks were awarded.",
+  "strengths": "Demonstrates high semantic similarity and strong technical correctness.",
+  "missing_points": "Minor gaps in completeness regarding edge case handling.",
+  "suggested_improvement": "Include explicit error handling to ensure 100% completeness."
 }}"""
         system_message = (
-            "You are an AI assessment evaluator. You must return ONLY a JSON object "
-            "matching the requested schema. Do not include any explanation, markdown, "
-            "or code blocks (no ```json or ```). Your response must be clean JSON."
+            "You are an expert AI assessment evaluator. You evaluate technical assessment submissions "
+            "fairly based on four dimensions: Semantic Similarity, Correctness, Completeness, and Relevance. "
+            "You must return ONLY a JSON object matching the requested schema."
         )
 
         raw_response = await self.client.generate_chat_completion(prompt, system_message)
@@ -477,19 +521,26 @@ Response Schema:
                 "similarity_score": 0,
                 "status": "Incorrect",
                 "ai_explanation": "AI evaluation failed to parse response.",
+                "feedback": "AI evaluation failed to parse response.",
                 "strengths": "None",
                 "missing_points": "Could not determine missing points.",
-                "suggested_improvement": "None"
+                "suggested_improvement": "None",
+                "improvements": "None"
             }
+
+        ai_exp = data.get("ai_explanation", data.get("feedback", "No explanation provided."))
+        sug_imp = data.get("suggested_improvement", data.get("improvements", "No improvement areas identified."))
 
         return {
             "score": data.get("score", 0),
             "similarity_score": data.get("similarity_score", data.get("score", 0)),
             "status": data.get("status", "Incorrect"),
-            "ai_explanation": data.get("ai_explanation", "No explanation provided."),
+            "ai_explanation": ai_exp,
+            "feedback": ai_exp,
             "strengths": data.get("strengths", "No strengths highlighted."),
             "missing_points": data.get("missing_points", "No missing points highlighted."),
-            "suggested_improvement": data.get("suggested_improvement", "No improvement areas identified.")
+            "suggested_improvement": sug_imp,
+            "improvements": sug_imp
         }
 
     async def generate_overall_evaluation(
@@ -503,50 +554,51 @@ Response Schema:
         questions_summary: List[Dict[str, Any]]
     ) -> Dict[str, Any]:
         """
-        Generates overall assessment results feedback, strengths, weaknesses, and hiring recommendation.
+        Generates overall assessment results feedback, strengths, weaknesses, and hiring recommendation
+        synthesizing candidate performance across Semantic Similarity, Correctness, Completeness, and Relevance.
         """
         questions_str = ""
         for i, q in enumerate(questions_summary):
             questions_str += f"""
 Question {i+1}: {q.get('question')}
 Candidate Answer: {q.get('candidate_answer')}
-Correct Answer: {q.get('correct_answer')}
+Reference Answer: {q.get('correct_answer')}
 AI Evaluation Status: {q.get('status')}
 Score: {q.get('score')}/100
 """
 
-        prompt = f"""Generate an overall evaluation summary, strengths, weaknesses, and hiring recommendation for the candidate's completed assessment.
+        prompt = f"""Generate an overall evaluation summary, technical strengths, weaknesses, and hiring recommendation for the candidate's completed technical assessment.
 
 Assessment Name: {assessment_name}
 Total Questions: {total_questions}
-Correct: {correct_count}
+Correct Answers: {correct_count}
 Partially Correct: {partial_count}
 Incorrect: {incorrect_count}
-Final Score: {final_percentage}%
+Overall Score Percentage: {final_percentage}%
 
-Details of each question:
+Individual Question Evaluation Summaries:
 {questions_str}
 
-CRITICAL RULES AND CONSTRAINTS (YOU MUST COMPLY WITH ALL RULES):
-1. Return ONLY valid JSON. Do NOT wrap the JSON in markdown code blocks like ```json or ```. Return the raw JSON string directly.
-2. Provide a cohesive, professional hiring manager summary in "overall_feedback".
-3. Identify 2-3 key technical strengths in "overall_strengths".
-4. Identify 1-2 areas of weakness or missing knowledge in "overall_weaknesses".
+CRITICAL RULES AND CONSTRAINTS:
+1. Return ONLY valid JSON. Do NOT wrap in markdown code blocks.
+2. Provide an overall assessment feedback in "overall_feedback" synthesizing candidate performance across all 4 evaluation dimensions (Semantic Similarity, Correctness, Completeness, and Relevance) and offering guidance for growth.
+3. Identify 2-3 specific technical strengths in "overall_strengths".
+4. Identify 1-2 primary areas of weakness or missing knowledge in "overall_weaknesses".
 5. Provide a clear hiring recommendation in "hiring_recommendation" (e.g. "Recommended for Interview", "Partially Recommended", "Not Recommended").
-6. The JSON structure must match the schema below exactly.
+6. The JSON structure must match the schema below.
 
 Response Schema:
 {{
-  "overall_feedback": "Cohesive summary of candidate's performance across all questions.",
-  "overall_strengths": "List or paragraph describing candidate's technical strengths.",
-  "overall_weaknesses": "List or paragraph describing candidate's weak areas.",
+  "overall_feedback": "Synthesizes performance across Semantic Similarity, Correctness, Completeness, and Relevance with actionable growth guidance.",
+  "overall_strengths": "Highlights key technical strengths and domain mastery.",
+  "overall_weaknesses": "Highlights specific knowledge gaps and areas needing improvement.",
   "hiring_recommendation": "Recommended for Interview"
 }}"""
 
         system_message = (
             "You are an expert technical recruiter and interviewer. You must return ONLY a JSON object "
             "matching the requested schema. Do not include any explanation, markdown, "
-            "or code blocks (no ```json or ```). Your response must be clean JSON."
+            "or code blocks. Your response must be clean JSON."
         )
 
         try:
