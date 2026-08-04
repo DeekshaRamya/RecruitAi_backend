@@ -132,12 +132,19 @@ class RunCodeRequest(BaseModel):
     async_: Optional[bool] = Field(default=False, alias="async")
     function_name: Optional[str] = None
     inputs: Optional[dict] = None
+    visibleTestCases: Optional[List[dict]] = None
+    hiddenTestCases: Optional[List[dict]] = None
+    testCases: Optional[List[dict]] = None
 
 class RunCodeResponse(BaseModel):
     stdout: str
     stderr: str
     executionTime: float
     status: str
+    testResults: Optional[List[dict]] = None
+    passedTestCases: Optional[int] = None
+    failedTestCases: Optional[int] = None
+    allPassed: Optional[bool] = None
 
 class PythonExecutionRequest(BaseModel):
     code: str

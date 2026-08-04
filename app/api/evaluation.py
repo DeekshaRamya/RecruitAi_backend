@@ -137,8 +137,6 @@ async def start_assessment(
         q_copy = dict(q)
         if "correctAnswer" in q_copy:
             del q_copy["correctAnswer"]
-        if "hiddenTestCases" in q_copy:
-            del q_copy["hiddenTestCases"]
         raw_sanitized.append(q_copy)
 
     sanitized_questions = sort_assessment_questions(raw_sanitized)
@@ -155,16 +153,64 @@ async def start_assessment(
 @router.post(
     "/assessment/run-code",
     response_model=RunCodeResponse,
-    summary="Run user code inside the secure sandbox"
+    summary="Run user code inside the secure sandbox against visible sample test cases"
 )
 async def run_candidate_code(
     request: RunCodeRequest,
     current_user: User = Depends(require_candidate)
 ):
     """
-    Executes candidate-supplied Python code in the sandbox against standard stdin.
+    Executes candidate-supplied Python code in the sandbox against standard stdin
+    or automatically executes every AI-generated visible sample test case and returns individual PASS/FAIL results.
     """
     logger.info(f"Run Code requested by candidate {current_user.id}. Code len={len(request.code)}")
+    
+    visible_tcs = request.visibleTestCases or request.testCases or []
+    sample_tc = None
+    if visible_tcs and len(visible_tcs) > 0 and isinstance(visible_tcs[0], dict):
+        sample_tc = visible_tcs[0]
+    elif request.input:
+        sample_tc = {"input": request.input, "expectedOutput": ""}
+    else:
+        sample_tc = {"input": "sample", "expectedOutput": "sample"}
+
+    tcs = [sample_tc]
+    tc_res = code_executor.execute_test_cases(request.code, tcs)
+    tr = tc_res["testResults"][0] if tc_res["testResults"] else {
+        "input": sample_tc.get("input", ""),
+        "expectedOutput": sample_tc.get("expectedOutput", ""),
+        "actualOutput": "",
+        "passed": False
+    }
+
+    status_icon = "PASSED ✅" if tr.get("passed") else "FAILED ❌"
+
+    summary_stdout = (
+        "================================================\n\n"
+        "Sample Test Case\n\n"
+        "Input:\n"
+        f"{tr.get('input', '')}\n\n"
+        "Expected Output:\n"
+        f"{tr.get('expectedOutput', '')}\n\n"
+        "Your Output:\n"
+        f"{tr.get('actualOutput', '')}\n\n"
+        "Status:\n"
+        f"{status_icon}\n\n"
+        "================================================"
+    )
+
+    overall_status = "Success" if tr.get("passed") else "Test Cases Failed"
+    return RunCodeResponse(
+        stdout=summary_stdout,
+        stderr=tr.get("stderr", ""),
+        executionTime=tr.get("runtime", 0.0),
+        status=overall_status,
+        testResults=tc_res["testResults"],
+        passedTestCases=1 if tr.get("passed") else 0,
+        failedTestCases=0 if tr.get("passed") else 1,
+        allPassed=tr.get("passed", False)
+    )
+
     exec_res = code_executor.execute_code(request.code, request.input)
     return RunCodeResponse(
         stdout=exec_res["stdout"],
@@ -323,7 +369,12 @@ async def process_ai_evaluations_and_summary_background(
                     ans_obj = answers_map.get(q_id_str)
                     cand_ans = ans_obj.candidate_answer if ans_obj else ""
                     q_type = str(q.get("type", "MCQ")).upper()
-                    if q_type != "MCQ" and cand_ans:
+                    q_subject = str(q.get("subject", "")).lower()
+                    is_coding_scenario = (
+                        q_type in {"CODING", "PYTHON_CODING", "SCENARIO_CODING"}
+                        or (q_type == "SCENARIO" and (q.get("starterCode") or q.get("starter_code") or q_subject == "python"))
+                    )
+                    if not is_coding_scenario and q_type != "MCQ" and cand_ans:
                         task = ai_service.evaluate_assessment_answer(
                             question=q.get("question") or q.get("problemStatement") or "",
                             scenario=q.get("scenario") or "",
@@ -472,8 +523,11 @@ async def submit_assessment(
         )
 
     if assignment.status == "COMPLETED":
-        logger.info(f"Submit Assessment API: Assignment {request.assignmentId} is already COMPLETED. Returning existing evaluation result.")
-        return await get_result(assignmentId=str(request.assignmentId), current_user=current_user, db=db)
+        logger.info(f"Submit Assessment API: Assignment {request.assignmentId} is already COMPLETED. Attempting to return existing evaluation result.")
+        try:
+            return await get_result(assignmentId=str(request.assignmentId), current_user=current_user, db=db)
+        except Exception as _e:
+            logger.warning(f"Existing result not found for completed assignment {request.assignmentId}, proceeding to re-evaluate.")
 
     now = datetime.now(timezone.utc)
     end_time = assignment.end_time
@@ -484,7 +538,7 @@ async def submit_assessment(
         due_date = due_date.replace(tzinfo=timezone.utc)
 
     is_overdue = (end_time and now > end_time) or (due_date and now > due_date)
-    if is_overdue and assignment.status not in ["IN_PROGRESS", "EXPIRED"]:
+    if is_overdue and assignment.status not in ["IN_PROGRESS", "EXPIRED", "COMPLETED"] and not request.autoSubmitted:
         assignment.status = "EXPIRED"
         await db.commit()
         raise HTTPException(
@@ -552,94 +606,83 @@ async def submit_assessment(
                 missing_points = f"Selected option '{cand_ans}' is incorrect."
                 suggested_improvement = "Review core concepts related to this question."
 
-        elif q_type in {"CODING", "PYTHON_CODING"}:
+        is_coding_scenario = (
+            q_type in {"CODING", "PYTHON_CODING", "SCENARIO_CODING"}
+            or (q_type == "SCENARIO" and (q.get("starterCode") or q.get("starter_code") or str(q.get("subject", "")).lower() == "python"))
+        )
+
+        if is_coding_scenario:
             q_marks = float(q.get("marks") or 10.0)
             max_marks += q_marks
+
+            # Collect visible sample test case ONLY (No hidden test cases)
+            sample_inp = q.get("sampleInput") or (q.get("visibleTestCase", {}).get("input") if isinstance(q.get("visibleTestCase"), dict) else "") or ""
+            sample_exp = q.get("sampleOutput") or (q.get("visibleTestCase", {}).get("expectedOutput") if isinstance(q.get("visibleTestCase"), dict) else "") or ""
+            if not sample_inp and q.get("visibleTestCases") and isinstance(q.get("visibleTestCases"), list) and len(q["visibleTestCases"]) > 0:
+                vtc = q["visibleTestCases"][0]
+                sample_inp = vtc.get("input", "")
+                sample_exp = vtc.get("expectedOutput") or vtc.get("output", "")
+
+            tcs = [{"input": sample_inp, "expectedOutput": sample_exp, "output": sample_exp}]
 
             if not cand_ans:
                 unanswered_questions += 1
                 status_val = "Incorrect"
-                feedback = "Unanswered."
+                feedback = "No code submitted."
                 missing_points = "No code submitted."
                 suggested_improvement = "Ensure you write the function logic and submit your code."
                 passed_tcs = 0
-                failed_tcs = len(q.get("hiddenTestCases") or []) or 1
+                failed_tcs = 1
                 run_time_val = 0.0
-                code_output_val = ""
+                code_output_val = "No code submitted."
                 test_results_log = []
+                similarity_score = 0
+                marks_awarded = 0.0
             else:
-                tcs = q.get("hiddenTestCases") or []
-                if not tcs and (q.get("sampleInput") is not None or q.get("exampleInput") is not None):
-                    tcs = [{
-                        "input": q.get("sampleInput") or q.get("exampleInput") or "",
-                        "output": q.get("sampleOutput") or q.get("exampleOutput") or ""
-                    }]
+                exec_res = code_executor.execute_test_cases(cand_ans, tcs)
+                passed_tcs = exec_res["passedTestCases"]
+                failed_tcs = exec_res["failedTestCases"]
+                total_tcs = exec_res["totalTestCases"]
+                total_run_time = exec_res["totalExecutionTime"]
+                test_results_log = exec_res["testResults"]
 
-                passed_tcs = 0
-                failed_tcs = 0
-                test_results_log = []
-                total_run_time = 0.0
-                last_output = ""
-
-                for idx, tc in enumerate(tcs):
-                    tc_input = tc.get("input", "")
-                    tc_expected = str(tc.get("output", "")).strip()
-
-                    exec_res = code_executor.execute_code(cand_ans, tc_input)
-                    stdout = str(exec_res["stdout"]).strip()
-                    stderr = exec_res["stderr"]
-                    runtime = exec_res["execution_time"]
-                    total_run_time += runtime
-
-                    is_tc_passed = (exec_res["status"] == "Success" and stdout == tc_expected)
-                    if is_tc_passed:
-                        passed_tcs += 1
-                    else:
-                        failed_tcs += 1
-
-                    test_results_log.append({
-                        "testCaseIndex": idx + 1,
-                        "input": tc_input,
-                        "expectedOutput": tc_expected,
-                        "actualOutput": stdout,
-                        "stderr": stderr,
-                        "passed": is_tc_passed,
-                        "runtime": runtime,
-                        "status": exec_res["status"]
-                    })
-                    last_output = stdout if not is_tc_passed else last_output
-
-                total_tcs = len(tcs)
-                tc_pass_ratio = (passed_tcs / total_tcs) if total_tcs > 0 else 1.0
-                marks_awarded = round(q_marks * tc_pass_ratio, 2)
-                similarity_score = int(tc_pass_ratio * 100)
+                tr = test_results_log[0] if test_results_log else {}
+                is_passed = (passed_tcs == 1)
+                marks_awarded = q_marks if is_passed else 0.0
+                similarity_score = 100 if is_passed else 0
+                score_percent = 100.0 if is_passed else 0.0
                 run_time_val = round(total_run_time, 4)
-                code_output_val = last_output if failed_tcs > 0 else "All test cases passed successfully."
 
-                if passed_tcs == total_tcs and total_tcs > 0:
+                code_output_val = tr.get("actualOutput", "")
+
+                if is_passed:
                     correct_answers += 1
                     is_correct = True
                     status_val = "Correct"
-                    feedback = f"All {total_tcs} test cases passed."
-                    strengths = "Code is completely accurate and passes all scenarios."
+                    feedback = (
+                        f"Sample Test Case Execution Report:\n"
+                        f"- Input: {tr.get('input', '')}\n"
+                        f"- Expected Output: {tr.get('expectedOutput', '')}\n"
+                        f"- Actual Output: {tr.get('actualOutput', '')}\n"
+                        f"- Status: PASSED ✅"
+                    )
+                    strengths = "Code is functionally correct and passes the sample test case."
                     missing_points = "None"
                     suggested_improvement = "None"
-                elif passed_tcs > 0:
-                    partially_correct_answers += 1
-                    is_correct = None
-                    status_val = "Partially Correct"
-                    feedback = f"{passed_tcs} of {total_tcs} test cases passed."
-                    strengths = "Demonstrated correct logic for some inputs."
-                    missing_points = "Code failed for certain edge cases."
-                    suggested_improvement = "Check constraints and double check logic for boundary values."
                 else:
                     wrong_answers += 1
                     is_correct = False
                     status_val = "Incorrect"
-                    feedback = f"Failed all test cases. Last output: {last_output}"
-                    strengths = "Attempted code submission."
-                    missing_points = "Code fails to produce expected output."
-                    suggested_improvement = "Review problem description and check input/output formats."
+                    feedback = (
+                        f"Sample Test Case Execution Report:\n"
+                        f"- Input: {tr.get('input', '')}\n"
+                        f"- Expected Output: {tr.get('expectedOutput', '')}\n"
+                        f"- Actual Output: {tr.get('actualOutput', '')}\n"
+                        f"- Status: FAILED ❌"
+                    )
+                    strengths = "Code submitted."
+                    missing_points = "Output does not match expected sample output."
+                    suggested_improvement = "Check function logic, input parameters, and return value."
         else:
             max_marks += 10.0
             if not cand_ans:
@@ -883,6 +926,12 @@ async def evaluate_assignment(
         cand_ans = ans_obj.candidate_answer if ans_obj else ""
         q_type = q.get("type", "MCQ")
 
+        q_subject = str(q.get("subject", "")).lower()
+        is_coding_scenario = (
+            q_type in {"CODING", "PYTHON_CODING", "SCENARIO_CODING"}
+            or (q_type == "SCENARIO" and (q.get("starterCode") or q.get("starter_code") or q_subject == "python"))
+        )
+
         logger.info(f"Recalculating grading for question q_id='{q_id_str[:60]}...': type={q_type}, length of answer found={len(cand_ans)}")
 
         is_correct = False
@@ -917,6 +966,43 @@ async def evaluate_assignment(
                 feedback = f"Incorrect. Correct answer is: {correct_opt}"
                 missing_points = f"Selected option '{cand_ans}' is incorrect."
                 suggested_improvement = "Review core concept related to this question."
+        elif is_coding_scenario:
+            q_marks = float(q.get("marks") or 10.0)
+            max_marks += q_marks
+            sample_inp = q.get("sampleInput") or (q.get("visibleTestCase", {}).get("input") if isinstance(q.get("visibleTestCase"), dict) else "") or ""
+            sample_exp = q.get("sampleOutput") or (q.get("visibleTestCase", {}).get("expectedOutput") if isinstance(q.get("visibleTestCase"), dict) else "") or ""
+            if not sample_inp and q.get("visibleTestCases") and isinstance(q.get("visibleTestCases"), list) and len(q["visibleTestCases"]) > 0:
+                vtc = q["visibleTestCases"][0]
+                sample_inp = vtc.get("input", "")
+                sample_exp = vtc.get("expectedOutput") or vtc.get("output", "")
+
+            tcs = [{"input": sample_inp, "expectedOutput": sample_exp, "output": sample_exp}]
+
+            if not cand_ans:
+                unanswered_questions += 1
+                status_val = "Incorrect"
+                feedback = "No code submitted."
+                marks_awarded = 0.0
+                similarity_score = 0
+            else:
+                exec_res = code_executor.execute_test_cases(cand_ans, tcs)
+                passed_tcs = exec_res["passedTestCases"]
+                tr = exec_res["testResults"][0] if exec_res.get("testResults") else {}
+                is_passed = (passed_tcs == 1)
+                marks_awarded = q_marks if is_passed else 0.0
+                similarity_score = 100 if is_passed else 0
+                if is_passed:
+                    correct_answers += 1
+                    is_correct = True
+                    status_val = "Correct"
+                    feedback = "Passed visible test case."
+                    strengths = "Code produces exact expected output for visible test case."
+                else:
+                    wrong_answers += 1
+                    is_correct = False
+                    status_val = "Incorrect"
+                    feedback = f"Failed visible test case. Expected: '{tr.get('expectedOutput')}', Actual: '{tr.get('actualOutput')}'"
+                    missing_points = "Output does not match visible test case expected output."
         else:
             max_marks += 10.0
             if not cand_ans:

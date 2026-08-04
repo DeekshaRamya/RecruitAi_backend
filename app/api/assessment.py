@@ -94,6 +94,31 @@ async def get_assessments(
     return await _get_all_assessments(db)
 
 @router.get(
+    "/live-schema",
+    summary="Get live database schema for SQL generation and visual inspection"
+)
+@plural_router.get(
+    "/live-schema",
+    summary="Get live database schema for SQL generation and visual inspection"
+)
+async def get_live_sql_schema(
+    force_refresh: bool = False,
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Returns the live AdventureWorks database schema (schemas, tables, columns, data types, primary keys).
+    """
+    from app.services.sql_schema_service import SqlSchemaService
+    schema_info = SqlSchemaService.get_live_schema(force_refresh=force_refresh)
+    schema_text = SqlSchemaService.get_live_schema_text(force_refresh=force_refresh)
+    return {
+        "success": True,
+        "database": schema_info.get("database", "AdventureWorks"),
+        "tables_map": schema_info.get("tables_map", {}),
+        "schema_prompt_text": schema_text
+    }
+
+@router.get(
     "/{id}",
     response_model=AssessmentResponse,
     summary="Get single assessment by ID"
@@ -159,7 +184,7 @@ async def _save_assessment_data(request: AssessmentSaveRequest, db: AsyncSession
         questions_count=request.questionsCount,
         created_date=request.createdDate,
         status=request.status,
-        candidates_assigned=request.candidatesAssigned,
+        candidates_assigned=0,
         questions=sorted_q
     )
     db.add(db_assessment)
@@ -331,30 +356,6 @@ async def _delete_assessment_data(id: str, db: AsyncSession):
     await db.commit()
     return {"message": "Assessment deleted successfully", "id": id}
 
-@router.get(
-    "/live-schema",
-    summary="Get live database schema for SQL generation and visual inspection"
-)
-@plural_router.get(
-    "/live-schema",
-    summary="Get live database schema for SQL generation and visual inspection"
-)
-async def get_live_sql_schema(
-    force_refresh: bool = False,
-    current_user: User = Depends(get_current_user)
-):
-    """
-    Returns the live AdventureWorks database schema (schemas, tables, columns, data types, primary keys).
-    """
-    from app.services.sql_schema_service import SqlSchemaService
-    schema_info = SqlSchemaService.get_live_schema(force_refresh=force_refresh)
-    schema_text = SqlSchemaService.get_live_schema_text(force_refresh=force_refresh)
-    return {
-        "success": True,
-        "database": schema_info.get("database", "AdventureWorks"),
-        "tables_map": schema_info.get("tables_map", {}),
-        "schema_prompt_text": schema_text
-    }
 
 @router.delete(
     "/{id}",

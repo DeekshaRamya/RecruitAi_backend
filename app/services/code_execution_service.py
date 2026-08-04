@@ -5,6 +5,7 @@ import tempfile
 import subprocess
 import time
 import logging
+import re
 
 logger = logging.getLogger("recruitai-backend.code_execution_service")
 
@@ -82,11 +83,122 @@ class CodeExecutionService:
                 "status": "Security Violation"
             }
 
-        # 2. Write code to a temporary file
+        # 2. Write code to a temporary file with dynamic argument parser runner
+        clean_code = code or ""
+        clean_code = re.sub(r'if\s+__name__\s*==\s*["\']__main__["\']\s*:', 'if __name__ == "__disabled_main__":', clean_code)
+
+        runner_wrapper = """
+
+if __name__ == "__main__":
+    import sys, json, inspect
+
+    def _parse_args_for_func(raw_input_str, params_list):
+        if not params_list:
+            return []
+        
+        raw_input_str = raw_input_str.strip() if raw_input_str else ""
+        
+        if raw_input_str:
+            try:
+                val = json.loads(raw_input_str)
+                if len(params_list) == 1:
+                    return [val]
+                elif isinstance(val, list) and len(val) == len(params_list):
+                    return val
+            except Exception:
+                pass
+
+        lines = [line.strip() for line in raw_input_str.splitlines() if line.strip()]
+        if len(params_list) == 1 and ('matrix' in params_list[0].lower() or 'grid' in params_list[0].lower() or (len(lines) > 1 and lines[0].isdigit())):
+            if lines and lines[0].isdigit():
+                num_rows = int(lines[0])
+                matrix = []
+                for line in lines[1:1+num_rows]:
+                    row = [int(x) if x.lstrip('-').isdigit() else (float(x) if x.replace('.','',1).lstrip('-').isdigit() else x) for x in line.split()]
+                    matrix.append(row)
+                return [matrix]
+
+        if len(params_list) > 1:
+            tokens = raw_input_str.split()
+            if len(tokens) >= len(params_list):
+                args = []
+                for tok in tokens[:len(params_list)]:
+                    if tok.lstrip('-').isdigit():
+                        args.append(int(tok))
+                    elif tok.replace('.','',1).lstrip('-').isdigit():
+                        args.append(float(tok))
+                    else:
+                        args.append(tok)
+                return args
+
+        p_name = params_list[0].lower()
+        
+        if any(w in p_name for w in ['list', 'numbers', 'arr', 'nums', 'lst', 'items', 'vector', 'elements']):
+            tokens = raw_input_str.split()
+            parsed_list = []
+            for tok in tokens:
+                if tok.lstrip('-').isdigit():
+                    parsed_list.append(int(tok))
+                elif tok.replace('.','',1).lstrip('-').isdigit():
+                    parsed_list.append(float(tok))
+                else:
+                    parsed_list.append(tok)
+            return [parsed_list]
+
+        if any(w in p_name for w in ['number', 'num', 'count', 'k', 'n', 'x', 'y', 'val', 'int']):
+            if raw_input_str.lstrip('-').isdigit():
+                return [int(raw_input_str)]
+            elif raw_input_str.replace('.','',1).lstrip('-').isdigit():
+                return [float(raw_input_str)]
+
+        return [raw_input_str]
+
+    _raw_stdin = sys.stdin.read()
+    _target_func = globals().get('solve') or globals().get('solution')
+    if not _target_func:
+        _funcs = [v for k, v in list(globals().items()) if callable(v) and not k.startswith('_') and k not in ('sys', 'json', 're', 'inspect', '_parse_args_for_func')]
+        if _funcs:
+            _target_func = _funcs[-1]
+
+    if _target_func:
+        _sig = inspect.signature(_target_func)
+        _params = list(_sig.parameters.keys())
+        _args = _parse_args_for_func(_raw_stdin, _params)
+
+        # Build inputs dictionary: mapping parameter name -> parsed input value
+        _inputs = {}
+        for idx, param_name in enumerate(_params):
+            if idx < len(_args):
+                _inputs[param_name] = _args[idx]
+
+        try:
+            # Execute target function with mapped inputs dictionary func(**_inputs)
+            if _inputs:
+                _res = _target_func(**_inputs)
+            else:
+                _res = _target_func()
+            if _res is not None:
+                print(_res)
+        except TypeError:
+            try:
+                _res = _target_func(*_args)
+                if _res is not None:
+                    print(_res)
+            except Exception as _err:
+                import traceback
+                traceback.print_exc(file=sys.stderr)
+                sys.exit(1)
+        except Exception as _err:
+            import traceback
+            traceback.print_exc(file=sys.stderr)
+            sys.exit(1)
+"""
+        executable_code = clean_code + runner_wrapper
+
         fd, temp_file_path = tempfile.mkstemp(suffix=".py")
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as temp_file:
-                temp_file.write(code)
+                temp_file.write(executable_code)
 
             # Use active python interpreter running virtual environment
             interpreter = sys.executable or "python"
@@ -138,6 +250,56 @@ class CodeExecutionService:
                 os.remove(temp_file_path)
             except Exception:
                 pass
+
+    def execute_test_cases(self, code: str, test_cases: list) -> dict:
+        """
+        Executes candidate code against a list of sample/visible test cases.
+        Automatically converts inputs, runs the code, and compares outputs to determine PASS/FAIL for each test case.
+        """
+        results = []
+        passed_count = 0
+        failed_count = 0
+        total_time = 0.0
+
+        for idx, tc in enumerate(test_cases or []):
+            tc_input = str(tc.get("input", ""))
+            tc_expected = str(tc.get("expectedOutput") if tc.get("expectedOutput") is not None else tc.get("output", "")).strip()
+
+            exec_res = self.execute_code(code, tc_input)
+            stdout = str(exec_res.get("stdout", "")).strip()
+            stderr = str(exec_res.get("stderr", "")).strip()
+            exec_time = float(exec_res.get("execution_time", 0.0))
+            total_time += exec_time
+
+            is_success = exec_res.get("status") == "Success"
+            passed = is_success and (stdout == tc_expected)
+
+            if passed:
+                passed_count += 1
+                status_str = "PASS"
+            else:
+                failed_count += 1
+                status_str = "FAIL"
+
+            results.append({
+                "testCaseIndex": idx + 1,
+                "input": tc_input,
+                "expectedOutput": tc_expected,
+                "actualOutput": stdout,
+                "stderr": stderr,
+                "passed": passed,
+                "status": status_str,
+                "executionTime": exec_time
+            })
+
+        return {
+            "totalTestCases": len(test_cases or []),
+            "passedTestCases": passed_count,
+            "failedTestCases": failed_count,
+            "totalExecutionTime": round(total_time, 4),
+            "allPassed": failed_count == 0 and len(test_cases or []) > 0,
+            "testResults": results
+        }
 
     def run_python(
         self,

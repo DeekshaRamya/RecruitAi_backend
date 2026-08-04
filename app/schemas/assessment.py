@@ -63,6 +63,31 @@ class QuestionResponse(BaseModel):
     exampleOutput: Optional[str] = None
     databaseSchema: Optional[List[str]] = None
     sampleData: Optional[List[str]] = None
+    functionSignature: Optional[str] = None
+    inputSchema: Optional[List[dict]] = None
+    outputSchema: Optional[dict] = None
+    sampleInput: Optional[str] = None
+    sampleOutput: Optional[str] = None
+    visibleTestCases: Optional[List[dict]] = None
+    hiddenTestCases: Optional[List[dict]] = None
+    constraints: Optional[List[str]] = None
+    starterCode: Optional[str] = None
+    inputFormat: Optional[str] = None
+    outputFormat: Optional[str] = None
+
+    @field_validator("constraints", mode="before")
+    @classmethod
+    def validate_constraints(cls, v):
+        if isinstance(v, str):
+            return [v]
+        return v
+
+    @field_validator("evaluationCriteria", "explanation", "inputFormat", "outputFormat", "scenario", "problemStatement", mode="before")
+    @classmethod
+    def validate_string_or_list_fields(cls, v):
+        if isinstance(v, list):
+            return "\n".join(f"- {str(item)}" if len(v) > 1 else str(item) for item in v)
+        return v
 
     @model_validator(mode="after")
     def validate_question_type(self) -> "QuestionResponse":
