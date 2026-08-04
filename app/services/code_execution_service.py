@@ -6,6 +6,7 @@ import subprocess
 import time
 import logging
 import re
+from typing import Any
 
 logger = logging.getLogger("recruitai-backend.code_execution_service")
 
@@ -21,6 +22,47 @@ FORBIDDEN_FUNCTIONS = {
 class SecurityError(Exception):
     """Exception raised when code violates sandbox security rules."""
     pass
+
+def normalize_output(text: Any) -> str:
+    """
+    Normalizes expected or actual execution output for robust comparison.
+    Ignores:
+    - Platform-specific line endings (\r\n vs \n)
+    - Leading and trailing whitespace on each line
+    - Extra blank lines at start or end of output
+    - Outer string quotes surrounding simple scalar strings
+    """
+    if text is None:
+        return ""
+
+    out_str = str(text)
+
+    # 1. Normalize line endings
+    out_str = out_str.replace("\r\n", "\n").replace("\r", "\n")
+
+    # 2. Strip whitespace on each line and drop empty lines
+    lines = [line.strip() for line in out_str.split("\n")]
+
+    # Remove leading and trailing empty lines
+    while lines and not lines[0]:
+        lines.pop(0)
+    while lines and not lines[-1]:
+        lines.pop()
+
+    result = "\n".join(lines)
+
+    # 3. Unquote simple single-line string if wrapped in quotes
+    if result.startswith('"') and result.endswith('"') and len(result) >= 2:
+        inner = result[1:-1]
+        if '"' not in inner:
+            return inner
+    if result.startswith("'") and result.endswith("'") and len(result) >= 2:
+        inner = result[1:-1]
+        if "'" not in inner:
+            return inner
+
+    return result
+
 
 class CodeExecutionService:
     def validate_code_security(self, code: str) -> None:
@@ -92,69 +134,98 @@ class CodeExecutionService:
 if __name__ == "__main__":
     import sys, json, inspect
 
+    _raw_stdin = sys.stdin.read()
+
     def _parse_args_for_func(raw_input_str, params_list):
         if not params_list:
             return []
         
         raw_input_str = raw_input_str.strip() if raw_input_str else ""
-        
-        if raw_input_str:
-            try:
-                val = json.loads(raw_input_str)
-                if len(params_list) == 1:
-                    return [val]
-                elif isinstance(val, list) and len(val) == len(params_list):
-                    return val
-            except Exception:
-                pass
+        if not raw_input_str:
+            return []
 
         lines = [line.strip() for line in raw_input_str.splitlines() if line.strip()]
-        if len(params_list) == 1 and ('matrix' in params_list[0].lower() or 'grid' in params_list[0].lower() or (len(lines) > 1 and lines[0].isdigit())):
-            if lines and lines[0].isdigit():
-                num_rows = int(lines[0])
-                matrix = []
-                for line in lines[1:1+num_rows]:
-                    row = [int(x) if x.lstrip('-').isdigit() else (float(x) if x.replace('.','',1).lstrip('-').isdigit() else x) for x in line.split()]
-                    matrix.append(row)
-                return [matrix]
 
-        if len(params_list) > 1:
-            tokens = raw_input_str.split()
-            if len(tokens) >= len(params_list):
-                args = []
-                for tok in tokens[:len(params_list)]:
+        try:
+            val = json.loads(raw_input_str)
+            if len(params_list) == 1:
+                return [val]
+            elif isinstance(val, list) and len(val) == len(params_list):
+                return val
+        except Exception:
+            pass
+
+        if len(params_list) == 1:
+            p_name = params_list[0].lower()
+            if 'matrix' in p_name or 'grid' in p_name or (len(lines) > 1 and lines[0].isdigit()):
+                if lines and lines[0].isdigit():
+                    num_rows = int(lines[0])
+                    matrix = []
+                    for line in lines[1:1+num_rows]:
+                        row = [int(x) if x.lstrip('-').isdigit() else (float(x) if x.replace('.','',1).lstrip('-').isdigit() else x) for x in line.split()]
+                        matrix.append(row)
+                    return [matrix]
+            if any(w in p_name for w in ['list', 'numbers', 'arr', 'nums', 'lst', 'items', 'vector', 'elements']):
+                tokens = raw_input_str.split()
+                parsed_list = []
+                for tok in tokens:
                     if tok.lstrip('-').isdigit():
-                        args.append(int(tok))
+                        parsed_list.append(int(tok))
                     elif tok.replace('.','',1).lstrip('-').isdigit():
-                        args.append(float(tok))
+                        parsed_list.append(float(tok))
                     else:
-                        args.append(tok)
-                return args
+                        parsed_list.append(tok)
+                return [parsed_list]
+            if any(w in p_name for w in ['number', 'num', 'count', 'k', 'n', 'x', 'y', 'val', 'int']):
+                if raw_input_str.lstrip('-').isdigit():
+                    return [int(raw_input_str)]
+                elif raw_input_str.replace('.','',1).lstrip('-').isdigit():
+                    return [float(raw_input_str)]
+            return [raw_input_str]
 
-        p_name = params_list[0].lower()
-        
-        if any(w in p_name for w in ['list', 'numbers', 'arr', 'nums', 'lst', 'items', 'vector', 'elements']):
-            tokens = raw_input_str.split()
-            parsed_list = []
-            for tok in tokens:
-                if tok.lstrip('-').isdigit():
-                    parsed_list.append(int(tok))
-                elif tok.replace('.','',1).lstrip('-').isdigit():
-                    parsed_list.append(float(tok))
+        # Multi-parameter parsing
+        if len(lines) >= len(params_list):
+            parsed_args = []
+            for idx, line in enumerate(lines[:len(params_list)]):
+                try:
+                    val = json.loads(line)
+                    parsed_args.append(val)
+                    continue
+                except Exception:
+                    pass
+                toks = line.split()
+                if len(toks) > 1:
+                    row = [int(x) if x.lstrip('-').isdigit() else (float(x) if x.replace('.','',1).lstrip('-').isdigit() else x) for x in toks]
+                    parsed_args.append(row)
+                elif len(toks) == 1:
+                    tok = toks[0]
+                    if tok.lstrip('-').isdigit():
+                        parsed_args.append(int(tok))
+                    elif tok.replace('.','',1).lstrip('-').isdigit():
+                        parsed_args.append(float(tok))
+                    else:
+                        parsed_args.append(tok)
                 else:
-                    parsed_list.append(tok)
-            return [parsed_list]
+                    parsed_args.append(line)
+            if len(parsed_args) == len(params_list):
+                return parsed_args
 
-        if any(w in p_name for w in ['number', 'num', 'count', 'k', 'n', 'x', 'y', 'val', 'int']):
-            if raw_input_str.lstrip('-').isdigit():
-                return [int(raw_input_str)]
-            elif raw_input_str.replace('.','',1).lstrip('-').isdigit():
-                return [float(raw_input_str)]
+        # Fallback space-separated token distribution across parameters
+        tokens = raw_input_str.split()
+        if len(tokens) >= len(params_list):
+            args = []
+            for tok in tokens[:len(params_list)]:
+                if tok.lstrip('-').isdigit():
+                    args.append(int(tok))
+                elif tok.replace('.','',1).lstrip('-').isdigit():
+                    args.append(float(tok))
+                else:
+                    args.append(tok)
+            return args
 
         return [raw_input_str]
 
-    _raw_stdin = sys.stdin.read()
-    _target_func = globals().get('solve') or globals().get('solution')
+    _target_func = globals().get('solution') or globals().get('solve')
     if not _target_func:
         _funcs = [v for k, v in list(globals().items()) if callable(v) and not k.startswith('_') and k not in ('sys', 'json', 're', 'inspect', '_parse_args_for_func')]
         if _funcs:
@@ -165,14 +236,12 @@ if __name__ == "__main__":
         _params = list(_sig.parameters.keys())
         _args = _parse_args_for_func(_raw_stdin, _params)
 
-        # Build inputs dictionary: mapping parameter name -> parsed input value
         _inputs = {}
         for idx, param_name in enumerate(_params):
             if idx < len(_args):
                 _inputs[param_name] = _args[idx]
 
         try:
-            # Execute target function with mapped inputs dictionary func(**_inputs)
             if _inputs:
                 _res = _target_func(**_inputs)
             else:
@@ -262,17 +331,40 @@ if __name__ == "__main__":
         total_time = 0.0
 
         for idx, tc in enumerate(test_cases or []):
-            tc_input = str(tc.get("input", ""))
-            tc_expected = str(tc.get("expectedOutput") if tc.get("expectedOutput") is not None else tc.get("output", "")).strip()
+            tc_input = ""
+            for k in ["input", "input_data", "sampleInput", "sample_input", "exampleInput", "example_input", "in"]:
+                val = tc.get(k)
+                if val is not None and str(val).strip():
+                    tc_input = str(val).strip()
+                    break
+
+            tc_expected = ""
+            for k in ["expectedOutput", "expected_output", "output", "sampleOutput", "sample_output", "exampleOutput", "example_output", "expected", "result", "answer", "target"]:
+                val = tc.get(k)
+                if val is not None and str(val).strip():
+                    tc_expected = str(val).strip()
+                    break
+
+            logger.info(f"[TEST RUNNER] Executing Test Case #{idx + 1}")
+            logger.info(f"[TEST RUNNER] Input Stdin: {repr(tc_input)}")
+            logger.info(f"[TEST RUNNER] Expected Output: {repr(tc_expected)}")
 
             exec_res = self.execute_code(code, tc_input)
-            stdout = str(exec_res.get("stdout", "")).strip()
+            stdout = str(exec_res.get("stdout", ""))
             stderr = str(exec_res.get("stderr", "")).strip()
             exec_time = float(exec_res.get("execution_time", 0.0))
             total_time += exec_time
 
+            norm_actual = normalize_output(stdout)
+            norm_expected = normalize_output(tc_expected)
+
             is_success = exec_res.get("status") == "Success"
-            passed = is_success and (stdout == tc_expected)
+            passed = is_success and (norm_actual == norm_expected)
+
+            logger.info(f"[TEST RUNNER] Raw Stdout: {repr(stdout)}")
+            logger.info(f"[TEST RUNNER] Normalized Actual: {repr(norm_actual)}")
+            logger.info(f"[TEST RUNNER] Normalized Expected: {repr(norm_expected)}")
+            logger.info(f"[TEST RUNNER] Comparison Result: {'PASS' if passed else 'FAIL'}")
 
             if passed:
                 passed_count += 1
@@ -285,11 +377,11 @@ if __name__ == "__main__":
                 "testCaseIndex": idx + 1,
                 "input": tc_input,
                 "expectedOutput": tc_expected,
-                "actualOutput": stdout,
-                "stderr": stderr,
+                "actualOutput": stdout.strip(),
                 "passed": passed,
                 "status": status_str,
-                "executionTime": exec_time
+                "executionTime": exec_time,
+                "stderr": stderr
             })
 
         return {

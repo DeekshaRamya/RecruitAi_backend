@@ -37,6 +37,7 @@ from app.schemas.evaluation import (
 )
 from app.services.azure_openai_service import AzureOpenAIService
 from app.services.code_execution_service import CodeExecutionService
+from app.utils.code_evaluator import evaluate_python_coding_submission, is_code_attempted, is_coding_scenario_question
 from app.dependencies.auth import require_candidate, require_recruiter, get_current_user
 from app.api.assignment import check_and_update_expired_assignments
 
@@ -370,10 +371,7 @@ async def process_ai_evaluations_and_summary_background(
                     cand_ans = ans_obj.candidate_answer if ans_obj else ""
                     q_type = str(q.get("type", "MCQ")).upper()
                     q_subject = str(q.get("subject", "")).lower()
-                    is_coding_scenario = (
-                        q_type in {"CODING", "PYTHON_CODING", "SCENARIO_CODING"}
-                        or (q_type == "SCENARIO" and (q.get("starterCode") or q.get("starter_code") or q_subject == "python"))
-                    )
+                    is_coding_scenario = is_coding_scenario_question(q)
                     if not is_coding_scenario and q_type != "MCQ" and cand_ans:
                         task = ai_service.evaluate_assessment_answer(
                             question=q.get("question") or q.get("problemStatement") or "",
@@ -582,6 +580,8 @@ async def submit_assessment(
         code_output_val = None
         test_results_log = None
 
+        is_coding_scenario = is_coding_scenario_question(q)
+
         if q_type == "MCQ":
             max_marks += 1.0
             correct_opt = str(q.get("correctAnswer", "")).strip()
@@ -606,83 +606,33 @@ async def submit_assessment(
                 missing_points = f"Selected option '{cand_ans}' is incorrect."
                 suggested_improvement = "Review core concepts related to this question."
 
-        is_coding_scenario = (
-            q_type in {"CODING", "PYTHON_CODING", "SCENARIO_CODING"}
-            or (q_type == "SCENARIO" and (q.get("starterCode") or q.get("starter_code") or str(q.get("subject", "")).lower() == "python"))
-        )
-
-        if is_coding_scenario:
+        elif is_coding_scenario:
             q_marks = float(q.get("marks") or 10.0)
             max_marks += q_marks
 
-            # Collect visible sample test case ONLY (No hidden test cases)
-            sample_inp = q.get("sampleInput") or (q.get("visibleTestCase", {}).get("input") if isinstance(q.get("visibleTestCase"), dict) else "") or ""
-            sample_exp = q.get("sampleOutput") or (q.get("visibleTestCase", {}).get("expectedOutput") if isinstance(q.get("visibleTestCase"), dict) else "") or ""
-            if not sample_inp and q.get("visibleTestCases") and isinstance(q.get("visibleTestCases"), list) and len(q["visibleTestCases"]) > 0:
-                vtc = q["visibleTestCases"][0]
-                sample_inp = vtc.get("input", "")
-                sample_exp = vtc.get("expectedOutput") or vtc.get("output", "")
+            eval_res = evaluate_python_coding_submission(cand_ans, q, q_marks=q_marks, code_executor=code_executor)
 
-            tcs = [{"input": sample_inp, "expectedOutput": sample_exp, "output": sample_exp}]
+            status_val = eval_res["status"]
+            is_correct = eval_res["is_correct"]
+            marks_awarded = eval_res["marks_awarded"]
+            similarity_score = eval_res["similarity_score"]
+            feedback = eval_res["feedback"]
+            strengths = eval_res["strengths"]
+            missing_points = eval_res["missing_points"]
+            suggested_improvement = eval_res["suggested_improvement"]
+            passed_tcs = eval_res["passed_test_cases"]
+            failed_tcs = eval_res["failed_test_cases"]
+            test_results_log = eval_res["test_results"]
+            code_output_val = test_results_log[0].get("actualOutput", "") if test_results_log else ("No code submitted." if status_val.upper() in {"NOT ATTEMPTED", "NOT_ATTEMPTED"} else "")
 
-            if not cand_ans:
+            if status_val.upper() in {"NOT ATTEMPTED", "NOT_ATTEMPTED"}:
                 unanswered_questions += 1
-                status_val = "Incorrect"
-                feedback = "No code submitted."
-                missing_points = "No code submitted."
-                suggested_improvement = "Ensure you write the function logic and submit your code."
-                passed_tcs = 0
-                failed_tcs = 1
-                run_time_val = 0.0
-                code_output_val = "No code submitted."
-                test_results_log = []
-                similarity_score = 0
-                marks_awarded = 0.0
+            elif status_val.upper() in {"CORRECT", "PASSED"}:
+                correct_answers += 1
+            elif status_val.upper() in {"PARTIALLY CORRECT", "PARTIAL", "PARTIALLY_CORRECT"}:
+                partially_correct_answers += 1
             else:
-                exec_res = code_executor.execute_test_cases(cand_ans, tcs)
-                passed_tcs = exec_res["passedTestCases"]
-                failed_tcs = exec_res["failedTestCases"]
-                total_tcs = exec_res["totalTestCases"]
-                total_run_time = exec_res["totalExecutionTime"]
-                test_results_log = exec_res["testResults"]
-
-                tr = test_results_log[0] if test_results_log else {}
-                is_passed = (passed_tcs == 1)
-                marks_awarded = q_marks if is_passed else 0.0
-                similarity_score = 100 if is_passed else 0
-                score_percent = 100.0 if is_passed else 0.0
-                run_time_val = round(total_run_time, 4)
-
-                code_output_val = tr.get("actualOutput", "")
-
-                if is_passed:
-                    correct_answers += 1
-                    is_correct = True
-                    status_val = "Correct"
-                    feedback = (
-                        f"Sample Test Case Execution Report:\n"
-                        f"- Input: {tr.get('input', '')}\n"
-                        f"- Expected Output: {tr.get('expectedOutput', '')}\n"
-                        f"- Actual Output: {tr.get('actualOutput', '')}\n"
-                        f"- Status: PASSED ✅"
-                    )
-                    strengths = "Code is functionally correct and passes the sample test case."
-                    missing_points = "None"
-                    suggested_improvement = "None"
-                else:
-                    wrong_answers += 1
-                    is_correct = False
-                    status_val = "Incorrect"
-                    feedback = (
-                        f"Sample Test Case Execution Report:\n"
-                        f"- Input: {tr.get('input', '')}\n"
-                        f"- Expected Output: {tr.get('expectedOutput', '')}\n"
-                        f"- Actual Output: {tr.get('actualOutput', '')}\n"
-                        f"- Status: FAILED ❌"
-                    )
-                    strengths = "Code submitted."
-                    missing_points = "Output does not match expected sample output."
-                    suggested_improvement = "Check function logic, input parameters, and return value."
+                wrong_answers += 1
         else:
             max_marks += 10.0
             if not cand_ans:
@@ -892,7 +842,8 @@ async def evaluate_assignment(
         ans_obj = answers_map.get(q_id_str)
         cand_ans = ans_obj.candidate_answer if ans_obj else ""
         q_type = str(q.get("type", "MCQ")).upper()
-        if q_type != "MCQ" and cand_ans:
+        is_coding_scenario = is_coding_scenario_question(q)
+        if not is_coding_scenario and q_type != "MCQ" and cand_ans:
             task = ai_service.evaluate_assessment_answer(
                 question=q.get("question") or q.get("problemStatement") or "",
                 scenario=q.get("scenario") or "",
@@ -926,11 +877,7 @@ async def evaluate_assignment(
         cand_ans = ans_obj.candidate_answer if ans_obj else ""
         q_type = q.get("type", "MCQ")
 
-        q_subject = str(q.get("subject", "")).lower()
-        is_coding_scenario = (
-            q_type in {"CODING", "PYTHON_CODING", "SCENARIO_CODING"}
-            or (q_type == "SCENARIO" and (q.get("starterCode") or q.get("starter_code") or q_subject == "python"))
-        )
+        is_coding_scenario = is_coding_scenario_question(q)
 
         logger.info(f"Recalculating grading for question q_id='{q_id_str[:60]}...': type={q_type}, length of answer found={len(cand_ans)}")
 
@@ -969,40 +916,26 @@ async def evaluate_assignment(
         elif is_coding_scenario:
             q_marks = float(q.get("marks") or 10.0)
             max_marks += q_marks
-            sample_inp = q.get("sampleInput") or (q.get("visibleTestCase", {}).get("input") if isinstance(q.get("visibleTestCase"), dict) else "") or ""
-            sample_exp = q.get("sampleOutput") or (q.get("visibleTestCase", {}).get("expectedOutput") if isinstance(q.get("visibleTestCase"), dict) else "") or ""
-            if not sample_inp and q.get("visibleTestCases") and isinstance(q.get("visibleTestCases"), list) and len(q["visibleTestCases"]) > 0:
-                vtc = q["visibleTestCases"][0]
-                sample_inp = vtc.get("input", "")
-                sample_exp = vtc.get("expectedOutput") or vtc.get("output", "")
 
-            tcs = [{"input": sample_inp, "expectedOutput": sample_exp, "output": sample_exp}]
+            eval_res = evaluate_python_coding_submission(cand_ans, q, q_marks=q_marks, code_executor=code_executor)
 
-            if not cand_ans:
+            status_val = eval_res["status"]
+            is_correct = eval_res["is_correct"]
+            marks_awarded = eval_res["marks_awarded"]
+            similarity_score = eval_res["similarity_score"]
+            feedback = eval_res["feedback"]
+            strengths = eval_res["strengths"]
+            missing_points = eval_res["missing_points"]
+            suggested_improvement = eval_res["suggested_improvement"]
+
+            if status_val.upper() in {"NOT ATTEMPTED", "NOT_ATTEMPTED"}:
                 unanswered_questions += 1
-                status_val = "Incorrect"
-                feedback = "No code submitted."
-                marks_awarded = 0.0
-                similarity_score = 0
+            elif status_val.upper() in {"CORRECT", "PASSED"}:
+                correct_answers += 1
+            elif status_val.upper() in {"PARTIALLY CORRECT", "PARTIAL", "PARTIALLY_CORRECT"}:
+                partially_correct_answers += 1
             else:
-                exec_res = code_executor.execute_test_cases(cand_ans, tcs)
-                passed_tcs = exec_res["passedTestCases"]
-                tr = exec_res["testResults"][0] if exec_res.get("testResults") else {}
-                is_passed = (passed_tcs == 1)
-                marks_awarded = q_marks if is_passed else 0.0
-                similarity_score = 100 if is_passed else 0
-                if is_passed:
-                    correct_answers += 1
-                    is_correct = True
-                    status_val = "Correct"
-                    feedback = "Passed visible test case."
-                    strengths = "Code produces exact expected output for visible test case."
-                else:
-                    wrong_answers += 1
-                    is_correct = False
-                    status_val = "Incorrect"
-                    feedback = f"Failed visible test case. Expected: '{tr.get('expectedOutput')}', Actual: '{tr.get('actualOutput')}'"
-                    missing_points = "Output does not match visible test case expected output."
+                wrong_answers += 1
         else:
             max_marks += 10.0
             if not cand_ans:

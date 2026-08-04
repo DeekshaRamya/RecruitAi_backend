@@ -5,6 +5,11 @@ from app.core.config import settings
 
 logger = logging.getLogger("recruitai-backend")
 
+import sys
+if sys.platform == "win32":
+    import asyncio
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
 from sqlalchemy.pool import NullPool
 
 # Primary Database connection URL

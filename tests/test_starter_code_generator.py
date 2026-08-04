@@ -4,46 +4,64 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 from app.utils.starter_code_generator import generate_python_starter_code
 
-def test_palindrome_starter_code():
-    code = generate_python_starter_code("solution(text)")
-    assert "def solution(text):" in code
+def test_example_1_list_and_target():
+    q = {
+        "title": "Count Target Occurrences",
+        "problemStatement": "Given a list of numbers and a target integer, count how many times target appears.",
+        "sampleInput": "[205, 310, 205, 411, 205, 310]\n205"
+    }
+    code = generate_python_starter_code(q)
+    assert "def solution(numbers, target):" in code
+    assert "eval(_raw_numbers)" in code
+    assert "target = int(input().strip())" in code
+    assert "data" not in code
+
+def test_example_2_string_and_k():
+    q = {
+        "title": "Truncate String",
+        "problemStatement": "Given a text string and an integer k, return the first k characters.",
+        "sampleInput": "hello\n3"
+    }
+    code = generate_python_starter_code(q)
+    assert "def solution(text, k):" in code
     assert "text = input().strip()" in code
-    assert "result = solution(text)" in code
-    assert "print(result)" in code
-    assert 'if __name__ == "__main__":' in code
+    assert "k = int(input().strip())" in code
+    assert "data" not in code
 
-def test_largest_element_starter_code():
-    code = generate_python_starter_code("solution(numbers)")
-    assert "def solution(numbers):" in code
-    assert "numbers = list(map(int, input().split()))" in code
-    assert "result = solution(numbers)" in code
-    assert "print(result)" in code
-
-def test_factorial_starter_code():
-    code = generate_python_starter_code("solution(number)")
-    assert "def solution(number):" in code
-    assert "number = int(input().strip())" in code
-    assert "result = solution(number)" in code
-
-def test_two_numbers_starter_code():
-    code = generate_python_starter_code("solution(a, b)")
+def test_example_3_two_integers():
+    q = {
+        "title": "Sum of Two Integers",
+        "problemStatement": "Given two integers a and b, compute their sum.",
+        "sampleInput": "10\n20"
+    }
+    code = generate_python_starter_code(q)
     assert "def solution(a, b):" in code
-    assert "a, b = map(int, input().split())" in code
-    assert "result = solution(a, b)" in code
+    assert "data" not in code
 
-def test_merge_lists_starter_code():
-    code = generate_python_starter_code("solution(list1, list2)")
-    assert "def solution(list1, list2):" in code
-    assert "list1 = list(map(int, input().split()))" in code
-    assert "list2 = list(map(int, input().split()))" in code
-    assert "result = solution(list1, list2)" in code
+def test_example_4_matrix_and_target():
+    q = {
+        "title": "Search Matrix",
+        "problemStatement": "Given a matrix and target integer, search for target.",
+        "sampleInput": "[[1, 2], [3, 4]]\n3"
+    }
+    code = generate_python_starter_code(q)
+    assert "def solution(matrix, target):" in code
+    assert "matrix = eval(_raw_matrix)" in code
+    assert "target = int(input().strip())" in code
+    assert "data" not in code
 
-def test_matrix_starter_code():
-    code = generate_python_starter_code("solution(matrix)")
-    assert "def solution(matrix):" in code
-    assert "rows = int(input().strip())" in code
-    assert "matrix = [list(map(int, input().split())) for _ in range(rows)]" in code
-    assert "result = solution(matrix)" in code
+def test_example_5_three_arrays():
+    q = {
+        "title": "Merge Three Arrays",
+        "problemStatement": "Given three arrays, merge them into a single sorted array.",
+        "sampleInput": "[1, 2]\n[3, 4]\n[5, 6]"
+    }
+    code = generate_python_starter_code(q)
+    assert "def solution(arr1, arr2, arr3):" in code
+    assert "arr1 = eval(_raw_arr1)" in code
+    assert "arr2 = eval(_raw_arr2)" in code
+    assert "arr3 = eval(_raw_arr3)" in code
+    assert "data" not in code
 
 def test_execute_sample_test_cases():
     from app.services.code_execution_service import CodeExecutionService
@@ -51,7 +69,7 @@ def test_execute_sample_test_cases():
 
     candidate_code = """def solution(text):
     clean = text.lower()
-    return "YES" if clean == clean[::-1] else "NO"
+    print("YES" if clean == clean[::-1] else "NO")
 """
 
     visible_tcs = [
@@ -67,11 +85,10 @@ def test_execute_sample_test_cases():
     assert res["testResults"][0]["status"] == "PASS"
 
 if __name__ == "__main__":
-    test_palindrome_starter_code()
-    test_largest_element_starter_code()
-    test_factorial_starter_code()
-    test_two_numbers_starter_code()
-    test_merge_lists_starter_code()
-    test_matrix_starter_code()
+    test_example_1_list_and_target()
+    test_example_2_string_and_k()
+    test_example_3_two_integers()
+    test_example_4_matrix_and_target()
+    test_example_5_three_arrays()
     test_execute_sample_test_cases()
     print("ALL TESTS PASSED SUCCESSFULLY!")

@@ -131,7 +131,8 @@ CRITICAL QUESTION NOVELTY & UNIQUENESS MANDATE (STRICT COMPLIANCE REQUIRED):
    - BAN ON PLAIN TEXTBOOK QUESTIONS: Never generate plain textbook questions like "Find the factorial" or "Check palindrome". Always wrap every question into a real-world scenario (e.g. "A school wants to reward students...", "A supermarket wants to calculate the bill...", "A bank wants to verify...").
    - ALLOWED BEGINNER / INTERMEDIATE TOPICS: Generate ONLY from beginner or intermediate Python concepts: Sum, Addition, Subtraction, Multiplication, Division, Average, Maximum, Minimum, Even Numbers, Odd Numbers, Prime Number, Palindrome, Armstrong Number, Perfect Number, Factorial, Fibonacci, Leap Year, Reverse Number, Reverse String, Count Digits, Sum of Digits, Character Count, Vowel Count, Consonant Count, Word Count, String Manipulation, List, Tuple, Dictionary, Set, Searching, Sorting, Frequency Count, Remove Duplicates, Mathematical Problems, Number Problems, Pattern Printing, If Else, Nested If, Loops, While Loop, For Loop, Functions, Basic Input Output, Beginner Python Logic.
    - FORBIDDEN ADVANCED TOPICS: Do NOT generate advanced topics (Classes, OOP, Decorators, Generators, Threads, Async, APIs, File Handling, Database, NumPy, Pandas, Django, Flask, Regular Expressions, Recursion unless explicitly requested).
-   - DYNAMIC STARTER CODE & FUNCTION FORMAT: Candidate completes only one function. Always generate dynamic starter code like `def solve(...):` matching parameter names to the scenario (e.g., `def solve(amount):`, `def solve(student_marks):`, `def solve(n):`, `def solve(text):`).
+   - DYNAMIC STARTER CODE & FUNCTION FORMAT: Candidate completes only one function. Always generate dynamic starter code matching input parameter count: `def solve(number):`, `def solve(a, b):`, `def solve(numbers):`, `def solve(text):`.
+   - INPUT FORMAT & LIST BRACKETS: Input Format must match Sample Input: One integer ("One integer."), Two integers ("Two space-separated integers."), List of integers ("A list of integers.", Lists MUST ALWAYS use square brackets []), String ("A string.").
    - CANDIDATE OUTPUT FORMAT: Candidates solve using print(). Do NOT expect return.
    - SAMPLE TEST CASE ONLY: Generate exactly ONE visible Sample Input (`sampleInput`) and Sample Output (`sampleOutput`). Do NOT generate hidden test cases or secret validation cases.
    - RANDOMIZATION MANDATE: Every question generation MUST be completely unique. Never repeat previous questions, scenarios, stories, character names, variables, constraints, numbers, input values, or output values.
@@ -301,66 +302,13 @@ RESPONSE SCHEMA (RETURN RAW CLEAN JSON ONLY):
 
     def _generate_python_starter_and_sig(self, q: dict, s_in: str) -> tuple[str, str]:
         """
-        Derives the function signature and starter code for Python coding questions based on strict rules:
-        - 1 input scalar: def solve(num):
-        - 2 inputs: def solve(a, b):
-        - 3 inputs: def solve(a, b, c):
-        - list input: def solve(numbers):
-        - string input: def solve(text):
+        Delegates starter code and function signature generation to the comprehensive starter code generator.
         """
-        topic_lower = str(q.get("topic", "")).lower()
-        q_text = (str(q.get("question", "")) + " " + str(q.get("problemStatement", "")) + " " + str(q.get("inputFormat", ""))).lower()
-        sig_raw = str(q.get("functionSignature") or q.get("starterCode") or "")
-        
-        # Parse params from AI signature if available
-        params_in_sig = []
-        sig_match = re.search(r"(\w+)\s*\((.*?)\)", sig_raw)
-        if sig_match:
-            p_str = sig_match.group(2).strip()
-            if p_str:
-                params_in_sig = [p.strip() for p in p_str.split(",") if p.strip()]
-
-        # 1. Check for 3 inputs
-        if len(params_in_sig) == 3 or any(w in q_text for w in ["three numbers", "three integers", "three inputs", "a, b, c", "three values"]):
-            return "solve(a, b, c)", "def solve(a, b, c):\n    # Write your solution here using print()\n    pass"
-
-        # 2. Check for 2 inputs
-        if len(params_in_sig) == 2 or any(w in q_text for w in ["two numbers", "two integers", "two inputs", "a, b", "greatest of two", "two values"]):
-            return "solve(a, b)", "def solve(a, b):\n    # Write your solution here using print()\n    pass"
-
-        # 3. Check for String input
-        is_string = any(w in topic_lower or w in q_text for w in [
-            "string", "text", "vowel", "consonant", "word", "char", "character", "palindrome", "reverse string", "anagram"
-        ])
-        if not is_string and s_in and not any(c.isdigit() for c in s_in) and len(s_in.split()) == 1 and s_in.isalpha():
-            is_string = True
-
-        if is_string:
-            return "solve(text)", "def solve(text):\n    # Write your solution here using print()\n    pass"
-
-        # 4. Check for List input
-        is_list = any(w in topic_lower or w in q_text for w in [
-            "list", "array", "arr", "sequence", "elements", "remove duplicates", "sort", "frequency",
-            "maximum element", "minimum element", "largest element", "smallest element"
-        ])
-        if not is_list and s_in and (" " in s_in or "," in s_in) and not ("\n" in s_in) and len(s_in.split()) > 3:
-            is_list = True
-
-        if is_list:
-            return "solve(numbers)", "def solve(numbers):\n    # Write your solution here using print()\n    pass"
-
-        # 5. Check parameter names from AI signature if 1 parameter
-        if len(params_in_sig) == 1:
-            p_name = params_in_sig[0].lower()
-            if p_name in ["text", "string", "s", "word", "sentence"]:
-                return "solve(text)", "def solve(text):\n    # Write your solution here using print()\n    pass"
-            elif p_name in ["numbers", "arr", "nums", "lst", "items", "data", "list"]:
-                return "solve(numbers)", "def solve(numbers):\n    # Write your solution here using print()\n    pass"
-            else:
-                return "solve(num)", "def solve(num):\n    # Write your solution here using print()\n    pass"
-
-        # 6. Fallback default for 1 numeric/general input
-        return "solve(num)", "def solve(num):\n    # Write your solution here using print()\n    pass"
+        from app.utils.starter_code_generator import generate_python_starter_code
+        dynamic_starter = generate_python_starter_code(q, override_sample_input=s_in)
+        sig_match = re.search(r"def\s+(\w+\s*\(.*?\))", dynamic_starter)
+        sig_name = sig_match.group(1) if sig_match else "solution(numbers)"
+        return sig_name, dynamic_starter
 
     def _clean_and_validate_questions(
         self, 
@@ -437,42 +385,47 @@ RESPONSE SCHEMA (RETURN RAW CLEAN JSON ONLY):
                     s_in = str(vtc_dict.get("input") or q.get("sampleInput") or q.get("exampleInput") or "").strip()
                     s_out = str(vtc_dict.get("expectedOutput") if vtc_dict.get("expectedOutput") is not None else (vtc_dict.get("output") or q.get("sampleOutput") or q.get("exampleOutput") or "")).strip()
 
-                    # Derive exact starter code & signature (solve(num), solve(a, b), solve(a, b, c), solve(numbers), solve(text))
+                    # Derive exact starter code & signature dynamically
                     sig_name, dynamic_starter = self._generate_python_starter_and_sig(q, s_in)
                     q["functionSignature"] = sig_name
                     q["starterCode"] = dynamic_starter
                     q["starter_code"] = dynamic_starter
 
-                    # Synchronize inputFormat for complete consistency
-                    if sig_name == "solve(text)":
-                        q["inputFormat"] = "Single string text"
-                    elif sig_name == "solve(numbers)":
-                        q["inputFormat"] = "Space-separated numbers"
-                    elif sig_name == "solve(a, b, c)":
-                        q["inputFormat"] = "Three space-separated or line-separated values a, b, and c"
-                    elif sig_name == "solve(a, b)":
-                        q["inputFormat"] = "Two space-separated or line-separated values a and b"
+                    # Synchronize inputFormat for complete consistency matching prompt rules
+                    if "text" in sig_name:
+                        q["inputFormat"] = "A string."
+                    elif "numbers" in sig_name or "arr" in sig_name:
+                        q["inputFormat"] = "A list of integers."
+                        if s_in and not s_in.startswith("[") and not ("\n" in s_in):
+                            tokens = s_in.replace(",", " ").split()
+                            if tokens and len(tokens) > 1:
+                                s_in = "[" + ", ".join(tokens) + "]"
+                    elif "matrix" in sig_name:
+                        q["inputFormat"] = "A matrix (2D list)."
+                    elif "," in sig_name:
+                        param_cnt = len(sig_name.split(","))
+                        q["inputFormat"] = f"{param_cnt} independent inputs matching problem specifications."
                     else:
-                        q["inputFormat"] = "Single numeric value num"
+                        q["inputFormat"] = "One integer."
 
                     # Banned placeholder cleanup
                     if is_placeholder(s_in, banned_inputs):
                         if "string" in topic_lower or "palindrome" in topic_lower:
-                            s_in = "madam"
+                            s_in = "hello"
                         elif "list" in topic_lower or "array" in topic_lower:
-                            s_in = "10 25 40 15 35"
+                            s_in = "[2, 5, 8, 10]"
                         elif "number" in topic_lower or "factorial" in topic_lower or "prime" in topic_lower:
-                            s_in = "6"
+                            s_in = "10"
                         else:
-                            s_in = "madam"
+                            s_in = "hello"
 
                     if is_placeholder(s_out, banned_outputs):
                         if "string" in topic_lower or "palindrome" in topic_lower:
                             s_out = "True"
                         elif "list" in topic_lower or "array" in topic_lower:
-                            s_out = "35"
+                            s_out = "25"
                         elif "number" in topic_lower or "factorial" in topic_lower:
-                            s_out = "720"
+                            s_out = "3628800"
                         else:
                             s_out = "True"
 
@@ -788,6 +741,34 @@ Response Schema:
         Evaluates a candidate's answer to a technical assessment question based on correctness,
         functionality, edge case handling, and efficiency, rather than similarity to the reference answer.
         """
+        if not candidate_answer or not str(candidate_answer).strip():
+            return {
+                "score": 0,
+                "similarity_score": 0,
+                "status": "Not Attempted",
+                "ai_explanation": "Question not attempted. No response submitted.",
+                "feedback": "Question not attempted. No response submitted.",
+                "strengths": "None",
+                "missing_points": "No answer submitted.",
+                "suggested_improvement": "Provide a complete response to the problem.",
+                "improvements": "Provide a complete response to the problem."
+            }
+
+        if "def " in str(candidate_answer) or "pass" in str(candidate_answer) or "return" in str(candidate_answer):
+            from app.utils.code_evaluator import is_code_attempted
+            if not is_code_attempted(candidate_answer):
+                return {
+                    "score": 0,
+                    "similarity_score": 0,
+                    "status": "Not Attempted",
+                    "ai_explanation": "Question not attempted. Unchanged starter code or non-functional placeholder code submitted.",
+                    "feedback": "Question not attempted. Unchanged starter code or non-functional placeholder code submitted.",
+                    "strengths": "None",
+                    "missing_points": "No solution logic implemented.",
+                    "suggested_improvement": "Implement the requested algorithm logic inside the function body.",
+                    "improvements": "Implement the requested algorithm logic inside the function body."
+                }
+
         prompt = f"""You are an expert AI technical assessment evaluator. Your task is to evaluate a candidate's Python / technical solution based strictly on correctness, functionality, and execution output, NOT text similarity to the reference answer.
 
 Assessment Context / Question: {question}

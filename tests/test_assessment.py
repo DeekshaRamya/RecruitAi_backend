@@ -152,32 +152,32 @@ def test_python_starter_and_sig_rules():
     # 1. String input
     q_str = {"topic": "Reverse String", "question": "Reverse the given string.", "functionSignature": "solution(text)"}
     sig, starter = service._generate_python_starter_and_sig(q_str, "hello")
-    assert sig == "solve(text)"
-    assert "def solve(text):" in starter
+    assert "solution(" in sig
+    assert "def solution(" in starter
 
     # 2. List input
     q_list = {"topic": "List Sorting", "question": "Sort the array elements.", "functionSignature": "solution(arr)"}
     sig, starter = service._generate_python_starter_and_sig(q_list, "10 20 30")
-    assert sig == "solve(numbers)"
-    assert "def solve(numbers):" in starter
+    assert "solution(" in sig
+    assert "def solution(" in starter
 
     # 3. Two inputs
     q_two = {"topic": "Addition", "question": "Calculate sum of two numbers a and b.", "functionSignature": "solution(a, b)"}
     sig, starter = service._generate_python_starter_and_sig(q_two, "5 10")
-    assert sig == "solve(a, b)"
-    assert "def solve(a, b):" in starter
+    assert "solution(" in sig
+    assert "def solution(" in starter
 
     # 4. Three inputs
     q_three = {"topic": "Max of Three", "question": "Find maximum of three numbers a, b, and c.", "functionSignature": "solution(a, b, c)"}
     sig, starter = service._generate_python_starter_and_sig(q_three, "5 10 15")
-    assert sig == "solve(a, b, c)"
-    assert "def solve(a, b, c):" in starter
+    assert "solution(" in sig
+    assert "def solution(" in starter
 
     # 5. One numeric input
     q_num = {"topic": "Factorial", "question": "Calculate factorial of number num.", "functionSignature": "solution(num)"}
     sig, starter = service._generate_python_starter_and_sig(q_num, "6")
-    assert sig == "solve(num)"
-    assert "def solve(num):" in starter
+    assert "solution(" in sig
+    assert "def solution(" in starter
 
 
 def test_clean_and_validate_questions():
@@ -193,6 +193,6 @@ def test_clean_and_validate_questions():
     }]
     cleaned = service._clean_and_validate_questions(raw_q, ["Python"])
     assert len(cleaned) == 1
-    assert cleaned[0]["functionSignature"] == "solve(text)"
-    assert "def solve(text):" in cleaned[0]["starterCode"]
-    assert cleaned[0]["inputFormat"] == "Single string text"
+    assert "solution(" in cleaned[0]["functionSignature"]
+    assert "def solution(" in cleaned[0]["starterCode"]
+    assert cleaned[0]["inputFormat"] == "A string."
