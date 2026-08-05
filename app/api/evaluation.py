@@ -1,8 +1,9 @@
 import uuid
+import re
 import asyncio
 import logging
 from datetime import datetime, timezone
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 from fastapi import APIRouter, Depends, status, HTTPException, Request, BackgroundTasks
 from sqlalchemy import select
 from sqlalchemy.orm import joinedload, selectinload
@@ -44,6 +45,238 @@ from app.api.assignment import check_and_update_expired_assignments
 router = APIRouter(prefix="/api", tags=["Evaluation"])
 ai_service = AzureOpenAIService()
 code_executor = CodeExecutionService()
+
+
+def evaluate_aptitude_question(cand_ans: str, q: Dict[str, Any], q_marks: float = 5.0) -> Dict[str, Any]:
+    """
+    Evaluates Aptitude Scenario-Based submission strictly by comparing candidate answer
+    against question's expectedAnswer. Never executes Python code or SQL, never checks
+    sampleOutput or boolean 'True'/'False'.
+    """
+    expected_ans = str(q.get("expectedAnswer") or q.get("correctAnswer") or "").strip()
+    cand_clean = (cand_ans or "").strip()
+
+    if not cand_clean:
+        return {
+            "status": "NOT ATTEMPTED",
+            "is_correct": False,
+            "marks_awarded": 0.0,
+            "similarity_score": 0,
+            "feedback": "Unanswered.",
+            "strengths": "None",
+            "missing_points": "No answer provided.",
+            "suggested_improvement": "Attempt calculation-based aptitude problems."
+        }
+
+    is_match = False
+    c_clean_sym = re.sub(r'[\$,₹,€,£,%,]', '', cand_clean).replace('rs.', '').replace('rs', '').replace('inr', '').strip()
+    e_clean_sym = re.sub(r'[\$,₹,€,£,%,]', '', expected_ans).replace('rs.', '').replace('rs', '').replace('inr', '').strip()
+
+    try:
+        c_val = float(c_clean_sym)
+        e_val = float(e_clean_sym)
+        if abs(c_val - e_val) < 1e-3:
+            is_match = True
+    except ValueError:
+        if cand_clean.lower() == expected_ans.lower() or c_clean_sym.lower() == e_clean_sym.lower():
+            is_match = True
+
+    if is_match:
+        return {
+            "status": "Correct",
+            "is_correct": True,
+            "marks_awarded": q_marks,
+            "similarity_score": 100,
+            "feedback": f"Correct answer! Expected: {expected_ans}",
+            "strengths": "Calculated the exact correct numeric/text response.",
+            "missing_points": "None",
+            "suggested_improvement": "None"
+        }
+    else:
+        return {
+            "status": "Incorrect",
+            "is_correct": False,
+            "marks_awarded": 0.0,
+            "similarity_score": 0,
+            "feedback": f"Incorrect answer. Submitted: '{cand_ans}', Expected: '{expected_ans}'",
+            "strengths": "Attempted the scenario problem.",
+            "missing_points": f"Answer '{cand_ans}' does not match expected result '{expected_ans}'.",
+            "suggested_improvement": f"Review the formula and calculation steps for {q.get('topic', 'this topic')}."
+        }
+
+
+def compare_sql_datasets(cand_exec: Dict[str, Any], exp_exec: Dict[str, Any], q_text: str = "") -> bool:
+    """
+    Compares candidate SQL execution result set against expected SQL execution result set.
+    Returns True if both result sets are identical in terms of:
+    - Number of rows
+    - Number of columns
+    - Column values & Row values
+    - Respects row ordering ONLY if 'ORDER BY' is specified in problem statement.
+    Disregards query text syntax, SQL formatting, alias differences, and JOIN logic variations.
+    """
+    if not cand_exec.get("success") or not exp_exec.get("success"):
+        return False
+
+    cand_rows = cand_exec.get("rows") or cand_exec.get("data") or []
+    exp_rows = exp_exec.get("rows") or exp_exec.get("data") or []
+
+    # Check number of rows
+    if len(cand_rows) != len(exp_rows):
+        return False
+
+    # Check column count if column metadata is present
+    cand_cols = cand_exec.get("columns")
+    exp_cols = exp_exec.get("columns")
+    if isinstance(cand_cols, list) and isinstance(exp_cols, list):
+        if len(cand_cols) != len(exp_cols):
+            return False
+
+    def normalize_value(v):
+        if v is None:
+            return "null"
+        s = str(v).strip().lower()
+        try:
+            f = float(s)
+            if f.is_integer():
+                return str(int(f))
+            return str(round(f, 4))
+        except ValueError:
+            pass
+        return s
+
+    def normalize_row_values(row):
+        if isinstance(row, dict):
+            return tuple(normalize_value(v) for _, v in sorted(row.items()))
+        elif isinstance(row, (list, tuple)):
+            return tuple(normalize_value(v) for v in row)
+        return (normalize_value(row),)
+
+    cand_norm = [normalize_row_values(r) for r in cand_rows]
+    exp_norm = [normalize_row_values(r) for r in exp_rows]
+
+    # Respect row ordering ONLY if explicitly requested in problem statement
+    q_str_upper = str(q_text or "").upper()
+    require_order = "ORDER BY" in q_str_upper
+
+    if require_order:
+        return cand_norm == exp_norm
+    else:
+        return sorted(cand_norm) == sorted(exp_norm)
+
+
+async def evaluate_sql_question(cand_ans: str, q: Dict[str, Any], q_marks: float = 10.0) -> Dict[str, Any]:
+    """
+    Evaluates SQL Scenario-Based submission strictly using result set execution comparison.
+    NEVER compares SQL text queries or uses AI string similarity.
+    Executes both candidate and expected queries against hidden datasets and computes score
+    solely from passed datasets.
+    """
+    cand_clean = (cand_ans or "").strip()
+    expected_ans = str(q.get("expectedAnswer") or q.get("correctAnswer") or "").strip()
+    q_text = str(q.get("question") or q.get("problemStatement") or "").strip()
+
+    if not cand_clean:
+        return {
+            "status": "NOT ATTEMPTED",
+            "is_correct": False,
+            "marks_awarded": 0.0,
+            "similarity_score": 0,
+            "feedback": "Unanswered SQL question.",
+            "strengths": "None",
+            "missing_points": "No SQL query provided.",
+            "suggested_improvement": "Write a SELECT query matching the problem requirements."
+        }
+
+    try:
+        from app.services.sql_scenario_service import SqlScenarioService
+        sql_service = SqlScenarioService()
+
+        # Gather all test datasets (default live DB dataset + any hidden datasets)
+        datasets = q.get("hiddenTestCases") or q.get("testCases", {}).get("hidden") or []
+        if not isinstance(datasets, list) or len(datasets) == 0:
+            datasets = [{"name": "default"}]
+
+        passed_datasets = 0
+        total_datasets = len(datasets)
+        last_cand_exec = None
+        last_exp_exec = None
+
+        for ds in datasets:
+            exam_id = str(ds.get("name") or ds.get("id") or "sql_eval")
+            cand_exec = await sql_service.execute_sql_via_api(query=cand_clean, exam_id=exam_id)
+            last_cand_exec = cand_exec
+
+            if not cand_exec.get("success"):
+                continue
+
+            if expected_ans:
+                exp_exec = await sql_service.execute_sql_via_api(query=expected_ans, exam_id=exam_id)
+                last_exp_exec = exp_exec
+                if exp_exec.get("success"):
+                    if compare_sql_datasets(cand_exec, exp_exec, q_text=q_text):
+                        passed_datasets += 1
+            else:
+                # If expected query not present, successful execution passes dataset
+                passed_datasets += 1
+
+        if total_datasets == 0:
+            total_datasets = 1
+
+        if passed_datasets == total_datasets:
+            return {
+                "status": "Correct",
+                "is_correct": True,
+                "marks_awarded": q_marks,
+                "similarity_score": 100,
+                "feedback": f"SQL Query executed successfully! Passed all {passed_datasets}/{total_datasets} dataset test cases.",
+                "strengths": "Wrote accurate query yielding exact target dataset.",
+                "missing_points": "None",
+                "suggested_improvement": "None"
+            }
+        elif passed_datasets > 0:
+            scored_marks = round((passed_datasets / total_datasets) * q_marks, 2)
+            return {
+                "status": "Partially Correct",
+                "is_correct": True,
+                "marks_awarded": scored_marks,
+                "similarity_score": round((passed_datasets / total_datasets) * 100, 2),
+                "feedback": f"SQL Query passed {passed_datasets}/{total_datasets} dataset test cases.",
+                "strengths": "Valid SQL syntax and correct logic on some datasets.",
+                "missing_points": f"Failed {total_datasets - passed_datasets} dataset test cases.",
+                "suggested_improvement": "Review edge cases and filtering conditions across all datasets."
+            }
+        else:
+            err_detail = ""
+            if last_cand_exec and not last_cand_exec.get("success"):
+                err_detail = f" Query execution error: {last_cand_exec.get('error') or 'syntax/schema error'}"
+            elif last_cand_exec and last_exp_exec:
+                cand_count = last_cand_exec.get("rowCount", len(last_cand_exec.get("rows", [])))
+                exp_count = last_exp_exec.get("rowCount", len(last_exp_exec.get("rows", [])))
+                err_detail = f" Result dataset mismatch (returned {cand_count} rows vs expected {exp_count} rows)."
+            return {
+                "status": "Incorrect",
+                "is_correct": False,
+                "marks_awarded": 0.0,
+                "similarity_score": 0,
+                "feedback": f"SQL query failed dataset execution test cases.{err_detail}",
+                "strengths": "Attempted query.",
+                "missing_points": f"Execution or result set mismatch on test datasets.{err_detail}",
+                "suggested_improvement": "Review WHERE clauses, JOIN conditions, and ORDER BY requirements."
+            }
+
+    except Exception as ex:
+        logger.error(f"[evaluate_sql_question] Error evaluating SQL query: {ex}")
+        return {
+            "status": "Incorrect",
+            "is_correct": False,
+            "marks_awarded": 0.0,
+            "similarity_score": 0,
+            "feedback": f"SQL Evaluation Error: {str(ex)}",
+            "strengths": "Submitted SQL query.",
+            "missing_points": "Execution failed during dataset evaluation.",
+            "suggested_improvement": "Ensure valid T-SQL query."
+        }
 
 @router.post(
     "/assessment/start",
@@ -563,7 +796,8 @@ async def submit_assessment(
         q_id = q.get("id") or q.get("question")
         q_id_str = str(q_id).strip()
         cand_ans = answers_map.get(q_id_str, "").strip()
-        q_type = q.get("type", "MCQ")
+        q_type = str(q.get("type", "MCQ")).upper().strip()
+        q_subject = str(q.get("subject", "")).upper().strip()
 
         is_correct = False
         marks_awarded = 0.0
@@ -582,6 +816,7 @@ async def submit_assessment(
 
         is_coding_scenario = is_coding_scenario_question(q)
 
+        # 1. MCQ Questions
         if q_type == "MCQ":
             max_marks += 1.0
             correct_opt = str(q.get("correctAnswer", "")).strip()
@@ -606,6 +841,55 @@ async def submit_assessment(
                 missing_points = f"Selected option '{cand_ans}' is incorrect."
                 suggested_improvement = "Review core concepts related to this question."
 
+        # 2. Aptitude Scenario-Based Questions (APTITUDE PIPELINE ONLY)
+        elif q_subject in {"APTITUDE"} or "APTITUDE" in q_subject or "QUANT" in q_subject or "REASONING" in q_subject:
+            q_marks = float(q.get("marks") or 5.0)
+            max_marks += q_marks
+
+            apt_res = evaluate_aptitude_question(cand_ans, q, q_marks=q_marks)
+
+            status_val = apt_res["status"]
+            is_correct = apt_res["is_correct"]
+            marks_awarded = apt_res["marks_awarded"]
+            similarity_score = apt_res["similarity_score"]
+            feedback = apt_res["feedback"]
+            strengths = apt_res["strengths"]
+            missing_points = apt_res["missing_points"]
+            suggested_improvement = apt_res["suggested_improvement"]
+
+            if status_val == "NOT ATTEMPTED":
+                unanswered_questions += 1
+            elif status_val == "Correct":
+                correct_answers += 1
+            else:
+                wrong_answers += 1
+
+        # 3. SQL Scenario-Based Questions (SQL PIPELINE ONLY)
+        elif q_subject in {"SQL"} or "SQL" in q_subject or q_type in {"SQL", "SQL_CODING"}:
+            q_marks = float(q.get("marks") or 10.0)
+            max_marks += q_marks
+
+            sql_res = await evaluate_sql_question(cand_ans, q, q_marks=q_marks)
+
+            status_val = sql_res["status"]
+            is_correct = sql_res["is_correct"]
+            marks_awarded = sql_res["marks_awarded"]
+            similarity_score = sql_res["similarity_score"]
+            feedback = sql_res["feedback"]
+            strengths = sql_res["strengths"]
+            missing_points = sql_res["missing_points"]
+            suggested_improvement = sql_res["suggested_improvement"]
+
+            if status_val == "NOT ATTEMPTED":
+                unanswered_questions += 1
+            elif status_val == "Correct":
+                correct_answers += 1
+            elif status_val == "Partially Correct":
+                partially_correct_answers += 1
+            else:
+                wrong_answers += 1
+
+        # 4. Python Scenario-Based Questions (PYTHON PIPELINE ONLY)
         elif is_coding_scenario:
             q_marks = float(q.get("marks") or 10.0)
             max_marks += q_marks
@@ -633,6 +917,8 @@ async def submit_assessment(
                 partially_correct_answers += 1
             else:
                 wrong_answers += 1
+
+        # 5. Generic Descriptive Scenario Fallback
         else:
             max_marks += 10.0
             if not cand_ans:
@@ -641,12 +927,12 @@ async def submit_assessment(
                 missing_points = "No answer provided."
                 suggested_improvement = "Try to answer descriptive scenarios."
             else:
-                # Default placeholder for scenario while AI processes in background
                 status_val = "Correct"
                 is_correct = True
                 correct_answers += 1
                 marks_awarded = 10.0
                 similarity_score = 100
+                feedback = "Scenario answer submitted successfully."
                 feedback = "Scenario answer submitted successfully. AI evaluation processing."
                 strengths = "Submitted detailed response."
 
@@ -875,11 +1161,12 @@ async def evaluate_assignment(
         q_id_str = str(q_id).strip()
         ans_obj = answers_map.get(q_id_str)
         cand_ans = ans_obj.candidate_answer if ans_obj else ""
-        q_type = q.get("type", "MCQ")
+        q_type = str(q.get("type", "MCQ")).upper().strip()
+        q_subject = str(q.get("subject", "")).upper().strip()
 
         is_coding_scenario = is_coding_scenario_question(q)
 
-        logger.info(f"Recalculating grading for question q_id='{q_id_str[:60]}...': type={q_type}, length of answer found={len(cand_ans)}")
+        logger.info(f"Recalculating grading for question q_id='{q_id_str[:60]}...': type={q_type}, subject={q_subject}, length of answer found={len(cand_ans)}")
 
         is_correct = False
         marks_awarded = 0.0
@@ -890,6 +1177,7 @@ async def evaluate_assignment(
         status_val = "Incorrect"
         similarity_score = 0
 
+        # 1. MCQ Questions
         if q_type == "MCQ":
             max_marks += 1.0
             correct_opt = q.get("correctAnswer", "").strip()
@@ -913,6 +1201,56 @@ async def evaluate_assignment(
                 feedback = f"Incorrect. Correct answer is: {correct_opt}"
                 missing_points = f"Selected option '{cand_ans}' is incorrect."
                 suggested_improvement = "Review core concept related to this question."
+
+        # 2. Aptitude Scenario-Based Questions (APTITUDE PIPELINE ONLY)
+        elif q_subject in {"APTITUDE"} or "APTITUDE" in q_subject or "QUANT" in q_subject or "REASONING" in q_subject:
+            q_marks = float(q.get("marks") or 5.0)
+            max_marks += q_marks
+
+            apt_res = evaluate_aptitude_question(cand_ans, q, q_marks=q_marks)
+
+            status_val = apt_res["status"]
+            is_correct = apt_res["is_correct"]
+            marks_awarded = apt_res["marks_awarded"]
+            similarity_score = apt_res["similarity_score"]
+            feedback = apt_res["feedback"]
+            strengths = apt_res["strengths"]
+            missing_points = apt_res["missing_points"]
+            suggested_improvement = apt_res["suggested_improvement"]
+
+            if status_val == "NOT ATTEMPTED":
+                unanswered_questions += 1
+            elif status_val == "Correct":
+                correct_answers += 1
+            else:
+                wrong_answers += 1
+
+        # 3. SQL Scenario-Based Questions (SQL PIPELINE ONLY)
+        elif q_subject in {"SQL"} or "SQL" in q_subject or q_type in {"SQL", "SQL_CODING"}:
+            q_marks = float(q.get("marks") or 10.0)
+            max_marks += q_marks
+
+            sql_res = await evaluate_sql_question(cand_ans, q, q_marks=q_marks)
+
+            status_val = sql_res["status"]
+            is_correct = sql_res["is_correct"]
+            marks_awarded = sql_res["marks_awarded"]
+            similarity_score = sql_res["similarity_score"]
+            feedback = sql_res["feedback"]
+            strengths = sql_res["strengths"]
+            missing_points = sql_res["missing_points"]
+            suggested_improvement = sql_res["suggested_improvement"]
+
+            if status_val == "NOT ATTEMPTED":
+                unanswered_questions += 1
+            elif status_val == "Correct":
+                correct_answers += 1
+            elif status_val == "Partially Correct":
+                partially_correct_answers += 1
+            else:
+                wrong_answers += 1
+
+        # 4. Python Scenario-Based Questions (PYTHON PIPELINE ONLY)
         elif is_coding_scenario:
             q_marks = float(q.get("marks") or 10.0)
             max_marks += q_marks

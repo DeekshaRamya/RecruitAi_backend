@@ -83,6 +83,7 @@ def generate_python_starter_code(
 
     # Extract function name and parameter names from AI signature if available
     sig_raw = str(q.get("functionSignature") or q.get("starterCode") or "")
+    # The function name must always be solution
     func_name = "solution"
     ai_params = []
     
@@ -91,15 +92,9 @@ def generate_python_starter_code(
         sig_match = re.search(r"(\w+)\s*\((.*?)\)", sig_raw)
 
     if sig_match:
-        name_candidate = sig_match.group(1).strip()
-        if name_candidate not in ("if", "print", "range", "len", "input"):
-            func_name = name_candidate
         p_str = sig_match.group(2).strip()
         if p_str:
             ai_params = [p.strip() for p in p_str.split(",") if p.strip()]
-
-    if func_name == "solve":
-        func_name = "solution"  # Normalize function name to solution for consistency across questions
 
     # Determine parameter names and types
     params: List[str] = []
@@ -114,7 +109,11 @@ def generate_python_starter_code(
                 p_t = str(item.get("type", "")).lower()
                 schema_params.append((p_n, p_t))
 
-    if schema_params:
+    # 1. Use explicit AI parameters if already specified in signature
+    if ai_params:
+        params = [sanitize_param_name(p, "arg") for p in ai_params]
+        param_types = ["string" if any(w in p.lower() for w in ["text", "str", "word"]) else ("list" if any(w in p.lower() for w in ["num", "arr", "price", "list", "val"]) else "int") for p in params]
+    elif schema_params:
         for p_n, p_t in schema_params:
             if "matrix" in p_t or "2d" in p_t:
                 pt = "matrix"
@@ -133,130 +132,66 @@ def generate_python_starter_code(
             params.append(sanitize_param_name(p_n, "arg"))
             param_types.append(pt)
     else:
-        line_types = [detect_line_type(l) for l in sample_lines]
-
-        # Multi-line sample input analysis
-        if len(sample_lines) >= 2:
-            if len(sample_lines) >= 3 and all(t in ("list", "space_separated_ints") for t in line_types[:3]):
-                params = ["arr1", "arr2", "arr3"]
-                param_types = ["list", "list", "list"]
-            elif len(sample_lines) >= 3 and all(t == "int" for t in line_types[:3]):
-                params = ["a", "b", "c"]
-                param_types = ["int", "int", "int"]
-            elif line_types[0] in ("list", "space_separated_ints") and line_types[1] in ("list", "space_separated_ints"):
-                params = ["arr1", "arr2"]
-                param_types = ["list", "list"]
-            elif line_types[0] in ("list", "space_separated_ints") and line_types[1] in ("int", "float"):
-                p2_name = "target" if any(w in q_text for w in ["target", "sum", "k", "goal"]) else ("k" if "k" in q_text else "target")
-                p1_name = "numbers" if any(w in q_text for w in ["numbers", "nums", "values"]) else "arr"
-                params = [p1_name, p2_name]
-                param_types = ["list", line_types[1]]
-            elif line_types[0] == "matrix" and line_types[1] in ("int", "float"):
-                p2_name = "target" if "target" in q_text else "k"
-                params = ["matrix", p2_name]
-                param_types = ["matrix", line_types[1]]
-            elif line_types[0] == "string" and line_types[1] in ("int", "float"):
-                p2_name = "k" if "k" in q_text or "count" in q_text else "n"
-                p1_name = "text" if "text" in q_text or "string" in q_text else "s"
-                params = [p1_name, p2_name]
-                param_types = ["string", line_types[1]]
-            elif line_types[0] in ("int", "float") and line_types[1] in ("int", "float"):
-                params = ["a", "b"]
-                param_types = [line_types[0], line_types[1]]
-            else:
-                for idx, lt in enumerate(line_types):
-                    pname = f"param{idx+1}"
-                    if lt == "matrix": pname = "matrix" if idx == 0 else f"matrix{idx+1}"
-                    elif lt in ("list", "space_separated_ints"): pname = f"arr{idx+1}" if len(sample_lines) > 1 else "numbers"
-                    elif lt == "string": pname = f"text{idx+1}" if len(sample_lines) > 1 else "text"
-                    elif lt in ("int", "float"): pname = chr(97 + idx)
-                    params.append(pname)
-                    param_types.append(lt if lt != "space_separated_ints" else "list")
-
-        # Single-line or no-sample-input analysis
-        elif len(sample_lines) == 1:
-            lt = line_types[0]
-            if lt == "space_separated_ints":
-                if any(w in q_text for w in ["two numbers", "two integers", "two space-separated", "a, b", "greatest of two"]):
-                    params = ["a", "b"]
-                    param_types = ["int", "int"]
-                elif any(w in q_text for w in ["three numbers", "three integers", "three space-separated"]):
-                    params = ["a", "b", "c"]
-                    param_types = ["int", "int", "int"]
-                else:
-                    params = ["numbers"]
-                    param_types = ["list"]
-            elif lt == "matrix":
-                if any(w in q_text for w in ["target", "search", "k"]):
-                    params = ["matrix", "target"]
-                    param_types = ["matrix", "int"]
-                else:
-                    params = ["matrix"]
-                    param_types = ["matrix"]
-            elif lt == "list":
-                if any(w in q_text for w in ["target", "target sum", "k"]):
-                    p2 = "target" if "target" in q_text else "k"
-                    params = ["numbers", p2]
-                    param_types = ["list", "int"]
-                else:
-                    params = ["numbers"]
-                    param_types = ["list"]
-            elif lt == "string":
-                if any(w in q_text for w in ["integer", "number", "k", "n"]):
-                    p2 = "k" if "k" in q_text else "n"
-                    params = ["text", p2]
-                    param_types = ["string", "int"]
-                else:
-                    params = ["text"]
-                    param_types = ["string"]
-            elif lt in ("int", "float"):
-                if any(w in q_text for w in ["two numbers", "two integers", "a and b"]):
-                    params = ["a", "b"]
-                    param_types = [lt, lt]
-                else:
-                    pname = "n" if "n" in q_text else ("k" if "k" in q_text else "num")
-                    params = [pname]
-                    param_types = [lt]
+        # 2. String-focused tasks with single string parameter
+        if any(w in q_text for w in ["vowel", "vowels", "palindrome", "reverse a string", "count vowels", "uppercase", "lowercase"]):
+            if "by k" in q_text or "k positions" in q_text or "k-th" in q_text:
+                params = ["text", "k"]
+                param_types = ["string", "int"]
+            elif "str1" in q_text or "two strings" in q_text or "merge string" in q_text:
+                params = ["str1", "str2"]
+                param_types = ["string", "string"]
             else:
                 params = ["text"]
                 param_types = ["string"]
 
-        # Text-based fallback analysis
-        else:
-            if any(w in q_text for w in ["three arrays", "three lists"]):
-                params = ["arr1", "arr2", "arr3"]
-                param_types = ["list", "list", "list"]
-            elif any(w in q_text for w in ["two arrays", "two lists", "merge lists"]):
-                params = ["arr1", "arr2"]
-                param_types = ["list", "list"]
-            elif "matrix" in q_text and any(w in q_text for w in ["target", "k", "search"]):
+        # 3. List/Array tasks with single list parameter
+        elif any(w in q_text for w in ["sum of a list", "sum of list", "max value", "maximum value", "min value", "minimum value", "list of integers", "array sum", "prices", "bookstore"]):
+            if "target sum" in q_text or "search target" in q_text or "find target" in q_text:
+                params = ["numbers", "target"]
+                param_types = ["list", "int"]
+            elif "rotate" in q_text or "by k" in q_text or "k-th" in q_text:
+                params = ["numbers", "k"]
+                param_types = ["list", "int"]
+            else:
+                p_name = "prices" if "price" in q_text or "bookstore" in q_text else "numbers"
+                params = [p_name]
+                param_types = ["list"]
+
+        # 4. Matrix tasks
+        elif "matrix" in q_text or "grid" in q_text or "diagonal" in q_text:
+            if "search target" in q_text or "find target" in q_text:
                 params = ["matrix", "target"]
                 param_types = ["matrix", "int"]
-            elif ("list" in q_text or "array" in q_text or "numbers" in q_text) and any(w in q_text for w in ["target", "k"]):
-                p2 = "target" if "target" in q_text else "k"
-                params = ["numbers", p2]
-                param_types = ["list", "int"]
-            elif ("string" in q_text or "text" in q_text or "word" in q_text) and any(w in q_text for w in ["k", "n", "count"]):
-                params = ["text", "k"]
-                param_types = ["string", "int"]
-            elif any(w in q_text for w in ["two integers", "two numbers", "a, b"]):
-                params = ["a", "b"]
-                param_types = ["int", "int"]
-            elif any(w in q_text for w in ["three integers", "three numbers"]):
-                params = ["a", "b", "c"]
-                param_types = ["int", "int", "int"]
+            else:
+                params = ["matrix"]
+                param_types = ["matrix"]
+
+        # 5. Multi-parameter tasks (price, tax / recharge, fee / a, b)
+        elif "price" in q_text and "tax" in q_text:
+            params = ["price", "tax"]
+            param_types = ["float", "float"]
+        elif "recharge" in q_text and "fee" in q_text:
+            params = ["recharge_amount", "service_fee"]
+            param_types = ["float", "float"]
+        elif any(w in q_text for w in ["two integers", "two numbers", "a and b"]):
+            params = ["a", "b"]
+            param_types = ["int", "int"]
+
+        # 6. Fallback based on sample input or default to single parameter
+        else:
+            sample_lines_cnt = len(sample_lines)
+            if sample_lines_cnt >= 2 and detect_line_type(sample_lines[0]) == "int" and detect_line_type(sample_lines[1]) in ("list", "space_separated_ints"):
+                params = ["numbers"]
+                param_types = ["list"]
             elif "string" in q_text or "text" in q_text or "word" in q_text:
                 params = ["text"]
                 param_types = ["string"]
-            elif "list" in q_text or "array" in q_text or "numbers" in q_text:
-                params = ["numbers"]
-                param_types = ["list"]
             elif "matrix" in q_text or "grid" in q_text:
                 params = ["matrix"]
                 param_types = ["matrix"]
             else:
-                params = ["num"]
-                param_types = ["int"]
+                params = ["numbers"]
+                param_types = ["list"]
 
     # Incorporate AI parameters if available and matching length
     if ai_params and len(ai_params) == len(params):
@@ -277,62 +212,5 @@ def generate_python_starter_code(
     # Build function signature
     func_def_sig = f"{func_name}({', '.join(params)})"
 
-    # Build main input parsing block
-    parsing_lines = []
-
-    # Handle space-separated multi-int single-line input (e.g. a, b = map(int, input().split()))
-    if len(params) == 2 and param_types == ["int", "int"] and (len(sample_lines) <= 1 or (sample_lines and " " in sample_lines[0])):
-        parsing_lines.append("    _raw_line = input().strip()")
-        parsing_lines.append("    if \" \" in _raw_line:")
-        parsing_lines.append("        _parts = _raw_line.split()")
-        parsing_lines.append(f"        {params[0]} = int(_parts[0])")
-        parsing_lines.append(f"        {params[1]} = int(_parts[1])")
-        parsing_lines.append("    else:")
-        parsing_lines.append(f"        {params[0]} = int(_raw_line)")
-        parsing_lines.append(f"        {params[1]} = int(input().strip())")
-    elif len(params) == 3 and param_types == ["int", "int", "int"] and (len(sample_lines) <= 1 or (sample_lines and " " in sample_lines[0])):
-        parsing_lines.append("    _raw_line = input().strip()")
-        parsing_lines.append("    if \" \" in _raw_line:")
-        parsing_lines.append("        _parts = _raw_line.split()")
-        parsing_lines.append(f"        {params[0]} = int(_parts[0])")
-        parsing_lines.append(f"        {params[1]} = int(_parts[1])")
-        parsing_lines.append(f"        {params[2]} = int(_parts[2])")
-        parsing_lines.append("    else:")
-        parsing_lines.append(f"        {params[0]} = int(_raw_line)")
-        parsing_lines.append(f"        {params[1]} = int(input().strip())")
-        parsing_lines.append(f"        {params[2]} = int(input().strip())")
-    else:
-        for p_name, p_type in zip(params, param_types):
-            if p_type == "string":
-                parsing_lines.append(f"    {p_name} = input().strip()")
-            elif p_type == "int":
-                parsing_lines.append(f"    {p_name} = int(input().strip())")
-            elif p_type == "float":
-                parsing_lines.append(f"    {p_name} = float(input().strip())")
-            elif p_type == "boolean":
-                parsing_lines.append(f"    {p_name} = eval(input().strip())")
-            elif p_type == "list":
-                parsing_lines.append(f"    _raw_{p_name} = input().strip()")
-                parsing_lines.append(f"    {p_name} = eval(_raw_{p_name}) if _raw_{p_name}.startswith('[') else list(map(int, _raw_{p_name}.split()))")
-            elif p_type == "matrix":
-                parsing_lines.append(f"    _raw_{p_name} = input().strip()")
-                parsing_lines.append(f"    {p_name} = eval(_raw_{p_name}) if _raw_{p_name}.startswith('[') else [list(map(int, input().split())) for _ in range(int(_raw_{p_name}))]")
-            elif p_type == "tuple":
-                parsing_lines.append(f"    {p_name} = eval(input().strip())")
-            else:
-                parsing_lines.append(f"    {p_name} = input().strip()")
-
-    parsing_code = "\n".join(parsing_lines)
-    args_str = ", ".join(params)
-
-    starter_code = f"""def {func_def_sig}:
-    # Write your solution here
-    pass
-
-if __name__ == "__main__":
-{parsing_code}
-    result = {func_name}({args_str})
-    if result is not None:
-        print(result)"""
-
-    return starter_code
+    # Return ONLY the dynamic function signature followed by pass
+    return f"def {func_def_sig}:\n    pass"

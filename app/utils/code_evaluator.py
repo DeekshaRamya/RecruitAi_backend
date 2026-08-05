@@ -7,32 +7,29 @@ logger = logging.getLogger("recruitai-backend.code_evaluator")
 
 def is_coding_scenario_question(q: Dict[str, Any]) -> bool:
     """
-    Robustly determines whether question q is a scenario-based Python coding question.
+    Strictly determines whether question q is a Python scenario-based coding question.
+    Returns False for Aptitude, SQL, and MCQ questions.
     """
     if not isinstance(q, dict):
         return False
 
     q_type = str(q.get("type", "MCQ")).upper().strip()
-    q_subject = str(q.get("subject", "")).lower().strip()
+    q_subject = str(q.get("subject", "")).upper().strip()
 
-    # 1. Known coding question types
+    # Aptitude, SQL, and MCQ questions are NEVER Python coding scenario questions
+    if q_subject in {"APTITUDE", "SQL"} or "APTITUDE" in q_subject or "SQL" in q_subject or q_type == "MCQ":
+        return False
+
+    # Known Python coding question types
     if q_type in {"CODING", "PYTHON_CODING", "SCENARIO_CODING", "PROGRAMMING", "PYTHON", "CODE"}:
         return True
 
-    # 2. Starter code or function signature present
+    # Subject is explicitly Python / Coding
+    if q_subject in {"PYTHON", "PY", "CODING", "PROGRAMMING"}:
+        return True
+
+    # Starter code or function signature present for Python
     if q.get("starterCode") or q.get("starter_code") or q.get("functionSignature") or q.get("function_signature"):
-        return True
-
-    # 3. Test cases present
-    if q.get("sampleInput") or q.get("sampleOutput") or q.get("exampleInput") or q.get("exampleOutput") or q.get("visibleTestCase") or q.get("visibleTestCases") or q.get("testCases") or q.get("hiddenTestCases"):
-        return True
-
-    # 4. Input/output format defined
-    if q.get("inputFormat") or q.get("outputFormat") or q.get("input_format") or q.get("output_format"):
-        return True
-
-    # 5. Subject is Python / Coding
-    if q_subject in {"python", "py", "coding", "programming"}:
         return True
 
     return False
@@ -42,6 +39,7 @@ def get_sample_test_case(q: Dict[str, Any]) -> Dict[str, str]:
     """
     Extracts the single sample test case from question dict q using the EXACT SAME fallback hierarchy
     as the frontend compiler ("Run Python Code" in CandidateDashboard.jsx).
+    Does not default to boolean 'True'/'False' unless the question explicitly requires boolean output.
     """
     def _extract_inp(obj: dict) -> str:
         for k in ["input", "input_data", "sampleInput", "sample_input", "exampleInput", "example_input", "in"]:
@@ -51,10 +49,27 @@ def get_sample_test_case(q: Dict[str, Any]) -> Dict[str, str]:
         return ""
 
     def _extract_out(obj: dict) -> str:
-        for k in ["expectedOutput", "expected_output", "output", "sampleOutput", "sample_output", "exampleOutput", "example_output", "expected", "result", "answer", "target"]:
+        # Prefer specific test case output keys first
+        for k in ["expectedOutput", "expected_output", "output", "expected"]:
             val = obj.get(k)
             if val is not None and str(val).strip():
                 return str(val).strip()
+        # Secondary fallback keys
+        for k in ["sampleOutput", "sample_output", "exampleOutput", "example_output", "result", "answer", "target"]:
+            val = obj.get(k)
+            if val is not None and str(val).strip():
+                v_str = str(val).strip()
+                # If fallback value is "True" or "False", verify if question is boolean-based
+                if v_str in ["True", "False"]:
+                    topic_str = (q.get("topic") or "").lower()
+                    prob_str = (q.get("problemStatement") or q.get("question") or "").lower()
+                    is_bool_topic = any(kw in topic_str or kw in prob_str for kw in ["palindrome", "prime", "valid", "contains", "boolean", "check", "is_"])
+                    if not is_bool_topic:
+                        # Try expectedAnswer if it is numeric/string instead
+                        exp_ans = str(q.get("expectedAnswer") or q.get("correctAnswer") or "").strip()
+                        if exp_ans and exp_ans not in ["True", "False", "None", "null"]:
+                            return exp_ans
+                return v_str
         return ""
 
     # 1. Check q.visibleTestCase (dict)

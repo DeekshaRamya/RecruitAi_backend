@@ -196,3 +196,83 @@ def test_clean_and_validate_questions():
     assert "solution(" in cleaned[0]["functionSignature"]
     assert "def solution(" in cleaned[0]["starterCode"]
     assert cleaned[0]["inputFormat"] == "A string."
+
+
+def test_aptitude_question_response_and_validation():
+    service = AzureOpenAIService()
+    raw_q = [
+        {
+            "subject": "Aptitude",
+            "topic": "Profit and Loss",
+            "type": "SCENARIO",
+            "difficulty": "Medium",
+            "scenario": "A merchant marks his goods 20% above the cost price and allows a discount of 10% on the marked price.",
+            "question": "Calculate the net profit percentage.",
+            "expectedAnswer": "8%",
+            "explanation": "Cost Price = 100, Marked Price = 120, Selling Price = 108. Net Profit = 8%."
+        }
+    ]
+    cleaned = service._clean_and_validate_questions(raw_q, ["Aptitude"])
+    assert len(cleaned) == 1
+    apt_q = cleaned[0]
+    assert apt_q["subject"] == "Aptitude"
+    assert apt_q["type"] == "SCENARIO"
+    assert apt_q["answerType"] == "NUMBER"
+    assert apt_q["placeholder"] == "Enter your answer"
+    assert apt_q["options"] is None
+    assert apt_q["expectedAnswer"] == "8"  # '%' symbol stripped automatically!
+    assert apt_q["outputFormat"] is not None
+    assert "Output Format:" in apt_q["outputFormat"]
+    assert apt_q["starterCode"] is None
+
+    # Validate with Pydantic model
+    validated_model = QuestionResponse(**apt_q)
+    assert validated_model.subject == "Aptitude"
+    assert validated_model.answerType == "NUMBER"
+    assert validated_model.placeholder == "Enter your answer"
+    assert validated_model.outputFormat is not None
+    assert validated_model.options is None
+
+
+def test_evaluation_pipeline_isolation():
+    from app.api.evaluation import evaluate_aptitude_question
+    from app.utils.code_evaluator import is_coding_scenario_question
+
+    # 1. Aptitude question evaluation isolation
+    apt_q = {
+        "subject": "Aptitude",
+        "type": "SCENARIO",
+        "question": "A deposits 1000 at 5% simple interest for 2 years. Calculate interest.",
+        "expectedAnswer": "100",
+        "exampleOutput": "True", # Spurious leftover output
+        "topic": "Simple Interest"
+    }
+
+    # Verify is_coding_scenario_question returns False for Aptitude
+    assert is_coding_scenario_question(apt_q) is False
+
+    # Evaluate correct numeric answer "100" against expectedAnswer "100"
+    res_correct = evaluate_aptitude_question("100", apt_q, q_marks=5.0)
+    assert res_correct["status"] == "Correct"
+    assert res_correct["is_correct"] is True
+    assert res_correct["marks_awarded"] == 5.0
+
+    # Evaluate formatted answer "$100" against expectedAnswer "100"
+    res_formatted = evaluate_aptitude_question("$100", apt_q, q_marks=5.0)
+    assert res_formatted["status"] == "Correct"
+    assert res_formatted["is_correct"] is True
+
+    # Evaluate wrong answer "50" against expectedAnswer "100" (MUST NOT evaluate against "True")
+    res_wrong = evaluate_aptitude_question("50", apt_q, q_marks=5.0)
+    assert res_wrong["status"] == "Incorrect"
+    assert res_wrong["is_correct"] is False
+    assert res_wrong["marks_awarded"] == 0.0
+
+    # 2. Python question isolation test
+    py_q = {
+        "subject": "Python",
+        "type": "CODING",
+        "starterCode": "def solution(arr):\n    pass",
+        "functionSignature": "solution(arr)"
+    }
+    assert is_coding_scenario_question(py_q) is True

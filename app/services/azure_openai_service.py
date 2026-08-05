@@ -26,18 +26,22 @@ class AzureOpenAIService:
         prompt = self._build_prompt(request, existing_questions=existing_questions)
         logger.info(f"Generated Prompt:\n{prompt}")
 
+        has_aptitude = any("APTITUDE" in str(s).upper() for s in request.subjects)
+        has_python = any("PYTHON" in str(s).upper() for s in request.subjects)
+        has_sql = any("SQL" in str(s).upper() for s in request.subjects)
+
         system_message = (
-            "You are an expert AI Python assessment generator that generates Python coding assessments for recruiters. "
-            "Your task is to generate ONE unique Python coding question every time the recruiter requests Python assessment generation. "
-            "The generated question MUST strictly satisfy all the following requirements:\n\n"
-            "1. TOPICS: Question MUST belong to beginner or intermediate Python concepts: Sum, Addition, Subtraction, Multiplication, Division, Average, Maximum, Minimum, Even Numbers, Odd Numbers, Prime Number, Palindrome, Armstrong Number, Perfect Number, Factorial, Fibonacci, Leap Year, Reverse Number, Reverse String, Count Digits, Sum of Digits, Character Count, Vowel Count, Consonant Count, Word Count, String Manipulation, List, Tuple, Dictionary, Set, Searching, Sorting, Frequency Count, Remove Duplicates, Mathematical Problems, Number Problems, Pattern Printing, If Else, Nested If, Loops, While Loop, For Loop, Functions, Basic Input Output, Beginner Python Logic.\n"
-            "2. FORBIDDEN TOPICS: Do NOT generate advanced topics (Classes, OOP, Decorators, Generators, Threads, Async, APIs, File Handling, Database, NumPy, Pandas, Django, Flask, Regular Expressions, Recursion unless explicitly requested).\n"
-            "3. SCENARIO-BASED MANDATE: Every question MUST be written as a real-world scenario (e.g., School, College, Library, Hospital, Railway, Airport, Cricket, Restaurant, Shopping Mall, Parking, Employee Salary, Student Marks, Banking, Delivery, Weather, Attendance, Electricity Bill, Mobile Recharge, Hotel, Supermarket, Inventory, Online Shopping, Movie Ticket Booking, Examination, Bus Reservation). NEVER generate plain textbook questions like 'Find the factorial' or 'Check palindrome'. Always wrap every question into a real-world scenario.\n"
-            "4. DIFFICULTY: Generate ONLY the difficulty selected by the recruiter (Easy, Medium, Hard). Do not generate a different difficulty.\n"
-            "5. STARTER CODE & FUNCTION FORMAT: Candidates must complete only one function `def solve(...):` (or dynamic parameters matching the scenario, e.g., `def solve(amount):`, `def solve(numbers):`, `def solve(text):`). Starter code must adapt parameters dynamically. Never use static or hardcoded starter code.\n"
-            "6. OUTPUT & CANDIDATE REQUIREMENT: Candidate solves problem using `print()`. Do NOT expect `return`. Evaluation compares only printed output.\n"
-            "7. TEST CASES & EVALUATION: Generate exactly ONE visible Sample Input and Sample Output. Never generate hidden test cases or secret validation cases. Score = 100 if printed output matches visible Sample Output, else 0.\n"
-            "8. RANDOMIZATION: Every generation MUST be completely different. Randomize story, scenario, character names, variables, constraints, numbers, input values, output values, and wording."
+            "You are an expert AI technical and aptitude assessment generator that produces high-quality placement exam questions for recruiters. "
+            "Your task is to generate unique, precise assessment questions strictly conforming to the requested subjects, topics, distributions, and schema rules.\n\n"
+            "APTITUDE ASSESSMENT MANDATE:\n"
+            "- Standard placement topics ONLY: LCM, HCF, Average, Profit and Loss, Percentage, Ratio and Proportion, Simple Interest, Compound Interest, Time and Work, Time Speed and Distance, Pipes and Cisterns, Ages, Partnership, Mixture and Alligation, Number System, Divisibility, Simplification, Probability, Permutation and Combination, Data Interpretation, Series, Calendar, Clock, Blood Relations, Direction Sense, Coding-Decoding, Seating Arrangement, Logical Reasoning.\n"
+            "- MCQ questions: Exactly 4 realistic options with 1 correct answer and a step-by-step calculation explanation.\n"
+            "- Scenario-Based questions: Strictly NO options (`options`: null). Descriptive, calculation-oriented aptitude problems where candidates type the answer in a single input field (`placeholder`: 'Enter your answer' or 'Type your answer here', `answerType`: 'NUMBER' or 'TEXT'). Include expectedAnswer, correctAnswer, answerType, placeholder, and step-by-step calculation explanation.\n"
+            "- Difficulty calibration: Easy (formula-based), Medium (2+ calculation steps), Hard (complex multi-step reasoning).\n\n"
+            "PYTHON & TECHNICAL ASSESSMENT MANDATE:\n"
+            "- Python coding questions must be framed as real-world scenarios with beginner/intermediate concepts, dynamic starter code, and visible sample test case.\n"
+            "- SQL questions must adhere strictly to AdventureWorks schema.\n"
+            "- Every generated question MUST be completely unique and non-repetitive."
         )
 
         # 2. Invoke Azure OpenAI via the client
@@ -66,7 +70,7 @@ class AzureOpenAIService:
         """
         Constructs a comprehensive, high-quality prompt for generating recruitment assessment questions.
         Enforces unique question generation, clear wording, beginner/intermediate Python coding challenges,
-        AdventureWorks SQL schema compliance, strict distractor guidelines, and topic relevance.
+        AdventureWorks SQL schema compliance, strict Aptitude placement topic compliance, distractor guidelines, and topic relevance.
         """
         import uuid
         import time
@@ -97,7 +101,7 @@ class AzureOpenAIService:
                 ex_items = "\n".join(clean_ex[:40])
                 exclusion_context = f"\nEXISTING ASSESSMENT QUESTIONS TO STRICTLY EXCLUDE (DO NOT REUSE OR REPEAT ANY OF THESE):\n{ex_items}\n"
 
-        prompt = f"""Generate professional technical recruitment assessment questions based on the following configurations:
+        prompt = f"""Generate professional technical and aptitude recruitment assessment questions based on the following configurations:
 
 UNIQUE ASSESSMENT GENERATION SEED: {unique_generation_seed}
 Selected Subjects: {subjects_str}
@@ -126,58 +130,70 @@ CRITICAL QUESTION NOVELTY & UNIQUENESS MANDATE (STRICT COMPLIANCE REQUIRED):
    - Provide exactly 4 meaningful options with EXACTLY ONE correct answer.
    - NEVER use "All of the above", "None of the above", "All of these", or "None of these".
 
-4. SCENARIO-BASED PYTHON CODING QUESTIONS:
-   - STRICT MANDATE FOR REAL-WORLD SCENARIOS: Every Python coding question MUST be framed as a real-world scenario (e.g., School, College, Library, Hospital, Railway, Airport, Cricket, Restaurant, Shopping Mall, Parking, Employee Salary, Student Marks, Banking, Delivery, Weather, Attendance, Electricity Bill, Mobile Recharge, Hotel, Supermarket, Inventory, Online Shopping, Movie Ticket Booking, Examination, Bus Reservation).
-   - BAN ON PLAIN TEXTBOOK QUESTIONS: Never generate plain textbook questions like "Find the factorial" or "Check palindrome". Always wrap every question into a real-world scenario (e.g. "A school wants to reward students...", "A supermarket wants to calculate the bill...", "A bank wants to verify...").
-   - ALLOWED BEGINNER / INTERMEDIATE TOPICS: Generate ONLY from beginner or intermediate Python concepts: Sum, Addition, Subtraction, Multiplication, Division, Average, Maximum, Minimum, Even Numbers, Odd Numbers, Prime Number, Palindrome, Armstrong Number, Perfect Number, Factorial, Fibonacci, Leap Year, Reverse Number, Reverse String, Count Digits, Sum of Digits, Character Count, Vowel Count, Consonant Count, Word Count, String Manipulation, List, Tuple, Dictionary, Set, Searching, Sorting, Frequency Count, Remove Duplicates, Mathematical Problems, Number Problems, Pattern Printing, If Else, Nested If, Loops, While Loop, For Loop, Functions, Basic Input Output, Beginner Python Logic.
-   - FORBIDDEN ADVANCED TOPICS: Do NOT generate advanced topics (Classes, OOP, Decorators, Generators, Threads, Async, APIs, File Handling, Database, NumPy, Pandas, Django, Flask, Regular Expressions, Recursion unless explicitly requested).
-   - DYNAMIC STARTER CODE & FUNCTION FORMAT: Candidate completes only one function. Always generate dynamic starter code matching input parameter count: `def solve(number):`, `def solve(a, b):`, `def solve(numbers):`, `def solve(text):`.
-   - INPUT FORMAT & LIST BRACKETS: Input Format must match Sample Input: One integer ("One integer."), Two integers ("Two space-separated integers."), List of integers ("A list of integers.", Lists MUST ALWAYS use square brackets []), String ("A string.").
-   - CANDIDATE OUTPUT FORMAT: Candidates solve using print(). Do NOT expect return.
-   - SAMPLE TEST CASE ONLY: Generate exactly ONE visible Sample Input (`sampleInput`) and Sample Output (`sampleOutput`). Do NOT generate hidden test cases or secret validation cases.
-   - RANDOMIZATION MANDATE: Every question generation MUST be completely unique. Never repeat previous questions, scenarios, stories, character names, variables, constraints, numbers, input values, or output values.
-    - CRITICAL GENERATION & VALIDATION WORKFLOW FOR CODING QUESTIONS:
-      Step 1: Generate a brand new, unique problem statement.
-      Step 2: Generate the reference Python solution.
-      Step 3: Generate 1 visible test case (sampleInput and sampleOutput / exampleInput and exampleOutput).
-      Step 4: Execute the reference solution internally and compute the exact output for the generated input.
-      Step 5: Verify that exampleInput and exampleOutput are non-empty, non-null, and non-trivial.
-    - STRICT MANDATES FOR PYTHON CODING QUESTION GENERATION:
-      1. NOVELTY & UNIQUENESS: Every assessment MUST generate a COMPLETELY NEW coding question. NEVER repeat titles, problem statements, sample inputs, sample outputs, test data, numbers, strings, or arrays from previous generations. Vary wording, examples, numbers, inputs, outputs, and constraints.
-      2. TOPIC RESTRICTION: Generate ONLY from the recruiter's selected topic (e.g. Topic = Strings -> String problems only, Topic = Lists -> List problems only).
-      3. COMPLETE PROBLEM STATEMENT: Always generate a detailed, complete coding problem (e.g. "Given an array of integers, write a Python function to find the length of the longest subarray with a sum equal to target k."). NEVER generate generic statements like "Solve this coding problem", "Write Python code", or "Complete the program".
-      4. MANDATORY SAMPLE INPUT & OUTPUT: sampleInput, sampleOutput, exampleInput, and exampleOutput are MANDATORY. NEVER return "No input", "No output", empty string, "N/A", or null.
-      5. DOMAIN-SPECIFIC STARTER CODE: Starter code parameter MUST match the problem domain:
-         - Strings: def solution(text):
-         - Lists: def solution(arr):
-         - Numbers: def solution(n):
-         - Matrix: def solution(matrix):
-         - Dictionary: def solution(data):
-         Do NOT always use def solution(data):.
-      6. INTERNAL VALIDATION: Execute the reference solution mentally to derive sampleOutput directly from sampleInput. Never guess outputs.
-      7. JSON SCHEMA PER CODING QUESTION:
-         {{
-           "title": "Longest Subarray with Target Sum",
-           "difficulty": "Medium",
-           "topic": "Lists",
-           "problemStatement": "Given an array of integers and a target sum k, write a Python function to return the length of the longest continuous subarray whose elements sum to k.",
-           "starterCode": "def solution(arr, k):\n    pass",
-           "sampleInput": "7\n4 8 2 9 1 6 3\n11",
-           "sampleOutput": "2",
-           "exampleInput": "7\n4 8 2 9 1 6 3\n11",
-           "exampleOutput": "2",
-           "constraints": ["1 <= len(arr) <= 1000", "-10^5 <= arr[i] <= 10^5"],
-           "expectedAnswer": "def solution(arr, k):\n    # Reference implementation\n    pass",
-           "explanation": "Calculates prefix sums to find the maximum length subarray with sum equal to k."
-         }}
-    - "evaluationCriteria": Clear rubric highlighting key evaluation points.
+4. APTITUDE ASSESSMENT MANDATE (STRICT COMPLIANCE FOR SUBJECT "Aptitude"):
+   - TOPICS: Questions MUST be generated ONLY from standard placement topics: LCM, HCF, Average, Profit and Loss, Percentage, Ratio and Proportion, Simple Interest, Compound Interest, Time and Work, Time Speed and Distance, Pipes and Cisterns, Ages, Partnership, Mixture and Alligation, Number System, Divisibility, Simplification, Probability, Permutation and Combination, Data Interpretation, Series, Calendar, Clock, Blood Relations, Direction Sense, Coding-Decoding, Seating Arrangement, Logical Reasoning.
+   - QUESTION TYPES:
+     * MCQ Questions (`"type": "MCQ"`):
+       - Formulate a clear placement-exam style question.
+       - Provide EXACTLY FOUR realistic option choices in `"options"`.
+       - Exactly ONE correct option choice in `"correctAnswer"`.
+       - Detailed step-by-step mathematical or logical reasoning in `"explanation"`.
+     * Scenario-Based Questions (`"type": "SCENARIO"`):
+       - DO NOT generate options (`"options"` MUST BE null / omitted). NEVER generate MCQ options for Scenario-Based Aptitude questions under any circumstance.
+       - ALWAYS generate complete, self-contained, and fully detailed questions. NEVER generate truncated or incomplete questions.
+       - MUST follow this exact 4-part structure:
+         1. `"scenario"`: Full real-world / business context containing all necessary numerical values and parameters. (e.g. "An employee deposits $12,000 in a savings scheme offering simple interest at 7% per annum for 3 years.")
+         2. `"question"`: Explicit calculation task asking what the candidate must calculate. (e.g. "Calculate the simple interest earned after 3 years.")
+         3. `"problemStatement"`: Full combined problem statement (Scenario + Task).
+         4. `"placeholder"`: `"Enter your answer"`
+       - MUST also include:
+         * `"answerType"`: `"NUMBER"` or `"TEXT"`
+         * `"expectedAnswer"` and `"correctAnswer"`: exact expected numerical/text result string (e.g. `"2520"`)
+         * `"explanation"`: detailed step-by-step calculation or reasoning.
+       - NEVER generate incomplete questions such as returning only a scenario description without the actual calculation task request.
+   - DIFFICULTY CALIBRATION FOR APTITUDE:
+     * Easy: Basic formula-based questions (single step calculations).
+     * Medium: Requires two or more calculation steps.
+     * Hard: Complex multi-step reasoning or multi-concept problems.
+   - NOVELTY & VARIATION: Vary numbers, names, contexts, and wording on every generation so no two assessment questions are identical.
 
-5. TOPIC RELEVANCE:
+5. SCENARIO-BASED PYTHON CODING QUESTIONS:
+   - STRICT MANDATE FOR REAL-WORLD SCENARIOS: Every Python coding question MUST be framed as a real-world scenario (e.g., School, College, Library, Hospital, Railway, Airport, Cricket, Restaurant, Shopping Mall, Parking, Employee Salary, Student Marks, Banking, Delivery, Weather, Attendance, Electricity Bill, Mobile Recharge, Hotel, Supermarket, Inventory, Online Shopping, Movie Ticket Booking, Examination, Bus Reservation).
+   - BAN ON PLAIN TEXTBOOK QUESTIONS: Never generate plain textbook questions like "Find the factorial" or "Check palindrome". Always wrap every question into a real-world scenario.
+   - ALLOWED BEGINNER / INTERMEDIATE TOPICS: Generate ONLY from beginner or intermediate Python concepts.
+   - CANDIDATE OUTPUT FORMAT: Candidates solve using print(). Do NOT expect return.
+   - SAMPLE TEST CASE ONLY: Generate exactly ONE visible Sample Input (`sampleInput`) and Sample Output (`sampleOutput`).
+
+6. TOPIC RELEVANCE:
    - Every question's "subject" MUST strictly be one of: {request.subjects}.
 
 RESPONSE SCHEMA (RETURN RAW CLEAN JSON ONLY):
 {{
   "questions": [
+    {{
+      "subject": "Aptitude",
+      "topic": "Time Speed and Distance",
+      "type": "MCQ",
+      "difficulty": "Easy",
+      "question": "A train 150 meters long is running at a speed of 54 km/hr. How much time will it take to cross a telegraph post?",
+      "options": ["8 seconds", "10 seconds", "12 seconds", "15 seconds"],
+      "correctAnswer": "10 seconds",
+      "explanation": "Speed in m/s = 54 * (5/18) = 15 m/s. Time = Distance / Speed = 150 / 15 = 10 seconds."
+    }},
+    {{
+      "subject": "Aptitude",
+      "topic": "Profit and Loss",
+      "type": "SCENARIO",
+      "difficulty": "Medium",
+      "scenario": "A merchant marks his goods 20% above the cost price and allows a discount of 10% on the marked price for cash payment.",
+      "question": "Calculate the merchant's net profit percentage.",
+      "answerType": "NUMBER",
+      "placeholder": "Enter your answer",
+      "expectedAnswer": "8",
+      "correctAnswer": "8",
+      "options": null,
+      "explanation": "Let Cost Price = 100. Marked Price = 120. Selling Price = 120 - 10% of 120 = 108. Net Profit = 108 - 100 = 8%."
+    }},
     {{
       "subject": "Python",
       "topic": "Strings",
@@ -187,20 +203,6 @@ RESPONSE SCHEMA (RETURN RAW CLEAN JSON ONLY):
       "options": ["upper()", "toUpper()", "uppercase()", "raise_case()"],
       "correctAnswer": "upper()",
       "explanation": "The upper() method returns a copy of the string converted to uppercase."
-    }},
-    {{
-      "subject": "Python",
-      "topic": "Lists",
-      "type": "SCENARIO",
-      "difficulty": "Medium",
-      "title": "Find Second Largest Unique Element",
-      "problemStatement": "Given a list of integers, write a Python function to find the second largest unique element in the list.",
-      "starterCode": "def solution(arr):\n    pass",
-      "sampleInput": "10 25 40 15 35",
-      "sampleOutput": "35",
-      "constraints": ["1 <= len(arr) <= 1000"],
-      "expectedAnswer": "def solution(arr):\n    unique_sorted = sorted(list(set(arr)))\n    return unique_sorted[-2] if len(unique_sorted) >= 2 else None",
-      "explanation": "Sorts unique elements and picks the second largest."
     }},
     {{
       "subject": "SQL",
@@ -300,6 +302,244 @@ RESPONSE SCHEMA (RETURN RAW CLEAN JSON ONLY):
                 if not q.get("explanation"):
                     q["explanation"] = f"The correct answer is '{q['correctAnswer']}', which accurately solves the {q['subject']} ({q['topic']}) task."
 
+    def _normalize_and_validate_python_question(self, q: dict) -> dict:
+        """
+        Validates and normalizes Python scenario questions to enforce 100% consistency
+        between problem statement, function signature, parameter naming, input format,
+        sample input, starter code, and visible test cases (Rules 1 - 7).
+        """
+        topic_lower = str(q.get("topic", "")).lower()
+        title_lower = str(q.get("title", "")).lower()
+        scen_raw = str(q.get("scenario") or q.get("problemStatement") or q.get("question") or "").strip()
+        q_full_text = f"{title_lower} {topic_lower} {scen_raw}".lower()
+
+        # Extract raw sample input & output
+        vtc_dict = q.get("visibleTestCase")
+        if not isinstance(vtc_dict, dict):
+            visible_list = q.get("visibleTestCases") or []
+            if isinstance(visible_list, list) and len(visible_list) > 0 and isinstance(visible_list[0], dict):
+                vtc_dict = visible_list[0]
+            else:
+                vtc_dict = {}
+
+        raw_in = str(vtc_dict.get("input") or q.get("sampleInput") or q.get("exampleInput") or "").strip()
+        raw_out = str(vtc_dict.get("expectedOutput") if vtc_dict.get("expectedOutput") is not None else (vtc_dict.get("output") or q.get("sampleOutput") or q.get("exampleOutput") or "")).strip()
+
+        # 1. Determine logical parameter name & data type based on problem requirements (Rules 1, 5, 6)
+        param_name = "numbers"
+        param_type_desc = "numbers: List[int]"
+        is_list = False
+        is_matrix = False
+        is_string = False
+        is_multi = False
+        multi_params = []
+        multi_types = []
+
+        if any(w in q_full_text for w in ["parcel weight", "package weight", "parcel", "weight"]):
+            param_name = "weights"
+            param_type_desc = "weights: List[int]"
+            is_list = True
+        elif any(w in q_full_text for w in ["price", "revenue", "sales", "store", "bookstore"]):
+            if "tax" in q_full_text:
+                is_multi = True
+                multi_params = ["price", "tax"]
+                multi_types = ["price: float", "tax: float"]
+            else:
+                param_name = "prices"
+                param_type_desc = "prices: List[int]"
+                is_list = True
+        elif any(w in q_full_text for w in ["mark", "score", "student"]):
+            param_name = "marks"
+            param_type_desc = "marks: List[int]"
+            is_list = True
+        elif any(w in q_full_text for w in ["temperature", "weather"]):
+            param_name = "temperatures"
+            param_type_desc = "temperatures: List[int]"
+            is_list = True
+        elif any(w in q_full_text for w in ["employee", "salary"]):
+            param_name = "employees"
+            param_type_desc = "employees: List[int]"
+            is_list = True
+        elif any(w in q_full_text for w in ["vowel", "palindrome", "reverse string", "uppercase", "lowercase", "word", "sentence", "text", "string"]):
+            if "merge string" in q_full_text or "two string" in q_full_text:
+                is_multi = True
+                multi_params = ["str1", "str2"]
+                multi_types = ["str1: str", "str2: str"]
+            else:
+                param_name = "text"
+                param_type_desc = "text: str"
+                is_string = True
+        elif any(w in q_full_text for w in ["matrix", "2d", "grid", "diagonal"]):
+            param_name = "matrix"
+            param_type_desc = "matrix: List[List[int]]"
+            is_matrix = True
+        elif "recharge" in q_full_text and "fee" in q_full_text:
+            is_multi = True
+            multi_params = ["recharge_amount", "service_fee"]
+            multi_types = ["recharge_amount: float", "service_fee: float"]
+        else:
+            param_name = "numbers"
+            param_type_desc = "numbers: List[int]"
+            is_list = True
+
+        # 2. Build exact function signature string (Rule 1 & Rule 6)
+        if is_multi:
+            func_sig = f"def solution({', '.join(multi_params)}):"
+            input_fmt_str = "\n".join(multi_types)
+        else:
+            func_sig = f"def solution({param_name}):"
+            input_fmt_str = param_type_desc
+
+        # 3. Clean and convert raw console input to match Python parameter data structure (Rule 2, 4, 7)
+        clean_sample_in = raw_in
+        if is_list:
+            lines = [l.strip() for l in raw_in.splitlines() if l.strip()]
+            if len(lines) >= 2 and lines[0].lstrip('-').isdigit() and not lines[1].startswith('['):
+                elements = []
+                for line in lines[1:]:
+                    elements.extend([x.strip(',') for x in line.split() if x.strip(',')])
+                clean_sample_in = "[" + ", ".join(elements) + "]"
+            elif len(lines) == 1 and not raw_in.startswith('['):
+                tokens = [x.strip(',') for x in raw_in.replace(',', ' ').split() if x.strip(',')]
+                if len(tokens) > 0:
+                    clean_sample_in = "[" + ", ".join(tokens) + "]"
+            elif not clean_sample_in or any(b in clean_sample_in.lower() for b in ["no input", "placeholder", "tbd"]):
+                clean_sample_in = "[12, 18, 9, 25, 17]" if param_name == "weights" else ("[120, 80, 50]" if param_name == "prices" else "[10, 20, 30]")
+        elif is_string:
+            if not clean_sample_in or clean_sample_in.startswith("[") or any(b in clean_sample_in.lower() for b in ["no input", "placeholder", "tbd"]):
+                clean_sample_in = '"hello"'
+            elif not clean_sample_in.startswith('"') and not clean_sample_in.startswith("'"):
+                clean_sample_in = f'"{clean_sample_in}"'
+        elif is_matrix:
+            if not clean_sample_in.startswith("["):
+                clean_sample_in = "[[1, 2], [3, 4]]"
+
+        if not raw_out or any(b in raw_out.lower() for b in ["no output", "placeholder", "tbd"]):
+            raw_out = "25" if is_list else ("True" if is_string else "100")
+
+        # Derive exact, explicit Output Format return type (banning vague/generic statements)
+        output_fmt_str = self._infer_explicit_output_format(q_full_text, raw_out)
+
+        # 4. Construct formatted question text
+        clean_scenario = scen_raw
+        for p in ["Scenario:", "Task:", "Input Format:", "Output Format:", "Example:", "Input:", "Output:"]:
+            clean_scenario = re.sub(rf'^{p}\s*', '', clean_scenario, flags=re.IGNORECASE).strip()
+
+        formatted_q = (
+            f"Scenario:\n"
+            f"{clean_scenario}\n\n"
+            f"Task:\n"
+            f"Write a Python function:\n\n"
+            f"{func_sig}\n\n"
+            f"that takes the specified inputs and returns the expected result.\n\n"
+            f"Input Format:\n"
+            f"{input_fmt_str}\n\n"
+            f"Output Format:\n"
+            f"{output_fmt_str}\n\n"
+            f"Example:\n\n"
+            f"Input:\n"
+            f"{clean_sample_in}\n\n"
+            f"Output:\n"
+            f"{raw_out}"
+        )
+
+        starter_code = f"{func_sig}\n    pass"
+
+        q["functionSignature"] = func_sig
+        q["starterCode"] = starter_code
+        q["starter_code"] = starter_code
+        q["inputFormat"] = input_fmt_str
+        q["outputFormat"] = output_fmt_str
+        q["scenario"] = clean_scenario
+        q["problemStatement"] = formatted_q
+        q["question"] = formatted_q
+        q["sampleInput"] = clean_sample_in
+        q["sampleOutput"] = raw_out
+        q["exampleInput"] = clean_sample_in
+        q["exampleOutput"] = raw_out
+
+        visible_tc = {"input": clean_sample_in, "expectedOutput": raw_out, "output": raw_out}
+        q["visibleTestCase"] = visible_tc
+        q["visibleTestCases"] = [visible_tc]
+        q["hiddenTestCases"] = []
+        q["testCases"] = {
+            "visible": [{"input": clean_sample_in, "output": raw_out}],
+            "hidden": []
+        }
+
+        return q
+
+    def _infer_explicit_output_format(self, q_full_text: str, raw_out: str) -> str:
+        """
+        Derives explicit, exact return type descriptions for Python questions,
+        strictly prohibiting generic statements like 'Return the computed result.'
+        Allowed formats:
+        - 'Return an integer.'
+        - 'Return a string.'
+        - 'Return a boolean.'
+        - 'Return a float.'
+        - 'Return a List[int].'
+        - 'Return a List[str].'
+        - 'Return a Dictionary.'
+        """
+        clean_out = str(raw_out or "").strip()
+        clean_text = q_full_text.lower()
+
+        # 1. Inspect raw output structure if present
+        if clean_out.startswith("{") and clean_out.endswith("}"):
+            return "Return a Dictionary."
+
+        if clean_out.startswith("[") and clean_out.endswith("]"):
+            try:
+                parsed = json.loads(clean_out.replace("'", '"'))
+                if isinstance(parsed, list):
+                    if len(parsed) > 0 and isinstance(parsed[0], str):
+                        return "Return a List[str]."
+                    return "Return a List[int]."
+            except Exception:
+                pass
+            if '"' in clean_out or "'" in clean_out or any(c.isalpha() for c in clean_out):
+                return "Return a List[str]."
+            return "Return a List[int]."
+
+        if clean_out.lower() in ["true", "false"]:
+            return "Return a boolean."
+
+        if "." in clean_out and clean_out.replace(".", "", 1).lstrip("-").isdigit():
+            return "Return a float."
+
+        if clean_out.lstrip("-").isdigit():
+            return "Return an integer."
+
+        # 2. Inspect problem keywords if raw output is string/text or ambiguous
+        if any(w in clean_text for w in ["palindrome", "check if", "is_valid", "boolean", "true or false", "is valid"]):
+            return "Return a boolean."
+
+        if any(w in clean_text for w in ["list of integer", "array of integer", "return list", "all evens", "filter"]):
+            return "Return a List[int]."
+
+        if any(w in clean_text for w in ["list of string", "array of string", "words list", "split"]):
+            return "Return a List[str]."
+
+        if any(w in clean_text for w in ["dictionary", "hash map", "mapping", "counts dict", "word frequency"]):
+            return "Return a Dictionary."
+
+        if any(w in clean_text for w in ["average", "float", "percentage", "ratio", "tax", "fee", "rate"]):
+            return "Return a float."
+
+        if any(w in clean_text for w in ["vowel", "reverse string", "text", "sentence", "name", "word", "concat", "merge string"]):
+            return "Return a string."
+
+        # Default to integer if count, sum, max, min, total, length, weight, price, mark
+        if any(w in clean_text for w in ["sum", "total", "max", "maximum", "min", "minimum", "count", "weight", "price", "mark", "salary", "length"]):
+            return "Return an integer."
+
+        # Fallback to string if raw_out has non-digit text
+        if any(c.isalpha() for c in clean_out):
+            return "Return a string."
+
+        return "Return an integer."
+
     def _generate_python_starter_and_sig(self, q: dict, s_in: str) -> tuple[str, str]:
         """
         Delegates starter code and function signature generation to the comprehensive starter code generator.
@@ -309,6 +549,101 @@ RESPONSE SCHEMA (RETURN RAW CLEAN JSON ONLY):
         sig_match = re.search(r"def\s+(\w+\s*\(.*?\))", dynamic_starter)
         sig_name = sig_match.group(1) if sig_match else "solution(numbers)"
         return sig_name, dynamic_starter
+
+    def _derive_aptitude_output_format(self, raw_expected: str, topic: str, existing_fmt: Optional[str] = None) -> tuple[str, str]:
+        """
+        Derives the 4-part Output Format guidelines and cleans expectedAnswer.
+        Output formats:
+        - Percentage
+        - Decimal
+        - Integer
+        - Currency
+        - Time
+        - Text
+        """
+        import re
+        topic_lower = (topic or "").lower()
+        exp_str = (raw_expected or "").strip()
+        
+        is_pct = "%" in exp_str or any(kw in topic_lower for kw in ["percentage", "interest", "profit and loss", "discount", "margin", "probability"])
+        is_curr = any(sym in exp_str for sym in ["$", "₹", "€", "£"]) or any(kw in topic_lower for kw in ["cost", "price", "salary", "partnership", "investment", "amount"])
+        is_time = any(unit in exp_str.lower() for unit in ["day", "hour", "minute", "second", "year", "month"]) or any(kw in topic_lower for kw in ["work", "speed", "distance", "cistern", "pipe", "clock", "calendar", "age"])
+
+        # 1. Percentage
+        if "%" in exp_str or (is_pct and not is_curr and not is_time and any(c.isdigit() for c in exp_str)):
+            clean_exp = re.sub(r'[\$,₹,€,%,]', '', exp_str).strip()
+            try:
+                val = float(clean_exp)
+                clean_exp = f"{val:.2f}".rstrip('0').rstrip('.') if val % 1 != 0 else str(int(val))
+            except ValueError:
+                pass
+            fmt = (
+                "Output Format:\n"
+                "- Enter only the numeric value.\n"
+                "- Do NOT include the '%' symbol.\n"
+                "- Round your answer to exactly 2 decimal places if required.\n"
+                "Example: 25 or 25.50"
+            )
+            return fmt, clean_exp
+
+        # 2. Currency
+        if any(sym in exp_str for sym in ["$", "₹", "€", "£"]) or (is_curr and any(c.isdigit() for c in exp_str)):
+            clean_exp = re.sub(r'[\$,₹,€,£,]', '', exp_str).strip()
+            try:
+                val = float(clean_exp)
+                clean_exp = f"{val:.2f}".rstrip('0').rstrip('.') if val % 1 != 0 else str(int(val))
+            except ValueError:
+                pass
+            fmt = (
+                "Output Format:\n"
+                "- Enter only the numeric amount.\n"
+                "- Do not include currency symbols such as ₹, $, €, etc.\n"
+                "- Round to 2 decimal places if required.\n"
+                "Example: 1250 or 1250.50"
+            )
+            return fmt, clean_exp
+
+        # 3. Time / Units
+        if is_time and any(c.isdigit() for c in exp_str):
+            clean_exp = exp_str.replace(",", "").strip()
+            fmt = (
+                "Output Format:\n"
+                "- Enter only the numeric value followed by the required unit if explicitly requested in the question.\n"
+                "Example: 5 days"
+            )
+            return fmt, clean_exp
+
+        # 4. Decimal vs Integer (for purely numeric answers)
+        if any(c.isdigit() for c in exp_str):
+            clean_exp = re.sub(r'[^\d\.]', '', exp_str).strip()
+            if "." in clean_exp:
+                try:
+                    val = float(clean_exp)
+                    clean_exp = f"{val:.2f}".rstrip('0').rstrip('.') if val % 1 != 0 else str(int(val))
+                except ValueError:
+                    pass
+                fmt = (
+                    "Output Format:\n"
+                    "- Enter only the numeric value.\n"
+                    "- Round to exactly 2 decimal places unless otherwise specified.\n"
+                    "Example: 12.75"
+                )
+                return fmt, clean_exp
+            else:
+                fmt = (
+                    "Output Format:\n"
+                    "- Enter only the whole number.\n"
+                    "- Do not include commas, units, currency symbols, or additional text.\n"
+                    "Example: 450"
+                )
+                return fmt, clean_exp
+
+        # 5. Text
+        fmt = (
+            "Output Format:\n"
+            "- Enter only the required word or phrase exactly as requested."
+        )
+        return fmt, exp_str
 
     def _clean_and_validate_questions(
         self, 
@@ -343,6 +678,8 @@ RESPONSE SCHEMA (RETURN RAW CLEAN JSON ONLY):
                 q["subject"] = "SQL"
             elif "PYTHON" in q["subject"].upper():
                 q["subject"] = "Python"
+            elif any(k in q["subject"].upper() for k in ["APTITUDE", "QUANT", "LOGICAL", "REASONING"]):
+                q["subject"] = "Aptitude"
 
             # 2. Fix question type if mismatched
             if q["type"] in ["CODING", "PYTHON_CODING", "SCENARIO_CODING"]:
@@ -359,142 +696,80 @@ RESPONSE SCHEMA (RETURN RAW CLEAN JSON ONLY):
                         clean_opts.append(f"Option {chr(65+len(clean_opts))}")
                     q["options"] = clean_opts
 
-                corr = str(q.get("correctAnswer") or "").strip()
-                if corr not in q["options"]:
+                if not q.get("correctAnswer") or is_placeholder(str(q.get("correctAnswer")), banned_outputs):
                     q["correctAnswer"] = q["options"][0]
                 
                 if not q.get("explanation") or is_placeholder(str(q.get("explanation")), banned_outputs):
                     q["explanation"] = f"The correct answer is '{q['correctAnswer']}', which accurately solves the {q['subject']} ({q['topic']}) task."
 
-            # 4. Clean Scenario / Programming / SQL questions
+            # 4. Clean Scenario / Programming / SQL / Aptitude questions
             else:
                 q["options"] = None
                 
-                if q["subject"].upper() == "PYTHON":
-                    topic_lower = str(q.get("topic", "")).lower()
+                if q["subject"].upper() == "APTITUDE":
+                    q["answerType"] = str(q.get("answerType") or q.get("answer_type") or "NUMBER").upper()
+                    if q["answerType"] not in ["NUMBER", "TEXT"]:
+                        q["answerType"] = "NUMBER"
+                    q["placeholder"] = str(q.get("placeholder") or "Enter your answer").strip()
+                    if not q["placeholder"] or any(banned in q["placeholder"].lower() for banned in ["code", "sql", "write"]):
+                        q["placeholder"] = "Enter your answer"
 
-                    # Extract sample input first to resolve signature parameter matching accurately
-                    vtc_dict = q.get("visibleTestCase")
-                    if not isinstance(vtc_dict, dict):
-                        visible_list = q.get("visibleTestCases") or []
-                        if isinstance(visible_list, list) and len(visible_list) > 0 and isinstance(visible_list[0], dict):
-                            vtc_dict = visible_list[0]
-                        else:
-                            vtc_dict = {}
+                    raw_expected = str(q.get("expectedAnswer") or q.get("correctAnswer") or "").strip()
+                    if not raw_expected:
+                        raw_expected = "0"
+                    raw_topic = str(q.get("topic") or "Aptitude").strip()
 
-                    s_in = str(vtc_dict.get("input") or q.get("sampleInput") or q.get("exampleInput") or "").strip()
-                    s_out = str(vtc_dict.get("expectedOutput") if vtc_dict.get("expectedOutput") is not None else (vtc_dict.get("output") or q.get("sampleOutput") or q.get("exampleOutput") or "")).strip()
+                    # Derive output format and clean expected answer
+                    output_fmt, clean_expected = self._derive_aptitude_output_format(raw_expected, raw_topic, q.get("outputFormat"))
+                    q["outputFormat"] = output_fmt
+                    q["expectedAnswer"] = clean_expected
+                    q["correctAnswer"] = clean_expected
 
-                    # Derive exact starter code & signature dynamically
-                    sig_name, dynamic_starter = self._generate_python_starter_and_sig(q, s_in)
-                    q["functionSignature"] = sig_name
-                    q["starterCode"] = dynamic_starter
-                    q["starter_code"] = dynamic_starter
+                    # Extract distinct scenario (context) and question (task)
+                    raw_scen = str(q.get("scenario") or "").strip()
+                    raw_q = str(q.get("question") or q.get("problemStatement") or q.get("candidateTask") or "").strip()
 
-                    # Synchronize inputFormat for complete consistency matching prompt rules
-                    if "text" in sig_name:
-                        q["inputFormat"] = "A string."
-                    elif "numbers" in sig_name or "arr" in sig_name:
-                        q["inputFormat"] = "A list of integers."
-                        if s_in and not s_in.startswith("[") and not ("\n" in s_in):
-                            tokens = s_in.replace(",", " ").split()
-                            if tokens and len(tokens) > 1:
-                                s_in = "[" + ", ".join(tokens) + "]"
-                    elif "matrix" in sig_name:
-                        q["inputFormat"] = "A matrix (2D list)."
-                    elif "," in sig_name:
-                        param_cnt = len(sig_name.split(","))
-                        q["inputFormat"] = f"{param_cnt} independent inputs matching problem specifications."
-                    else:
-                        q["inputFormat"] = "One integer."
-
-                    # Banned placeholder cleanup
-                    if is_placeholder(s_in, banned_inputs):
-                        if "string" in topic_lower or "palindrome" in topic_lower:
-                            s_in = "hello"
-                        elif "list" in topic_lower or "array" in topic_lower:
-                            s_in = "[2, 5, 8, 10]"
-                        elif "number" in topic_lower or "factorial" in topic_lower or "prime" in topic_lower:
-                            s_in = "10"
-                        else:
-                            s_in = "hello"
-
-                    if is_placeholder(s_out, banned_outputs):
-                        if "string" in topic_lower or "palindrome" in topic_lower:
-                            s_out = "True"
-                        elif "list" in topic_lower or "array" in topic_lower:
-                            s_out = "25"
-                        elif "number" in topic_lower or "factorial" in topic_lower:
-                            s_out = "3628800"
-                        else:
-                            s_out = "True"
-
-                    v_inp = s_in
-                    v_exp = s_out
-
-                    # Automated recomputation for standard topics
-                    q_str = str(q.get("question", "") or q.get("problemStatement", "")).lower()
-
-                    if "palindrome" in topic_lower or "palindrome" in q_str:
-                        is_pal = (v_inp.lower() == v_inp.lower()[::-1])
-                        if v_exp.upper() in ["YES", "NO"]:
-                            v_exp = "YES" if is_pal else "NO"
-                        elif v_exp in ["1", "0"]:
-                            v_exp = "1" if is_pal else "0"
-                        else:
-                            v_exp = "True" if is_pal else "False"
-
-                    elif ("factorial" in topic_lower or "factorial" in q_str) and v_inp.replace("-", "").isdigit():
-                        import math
-                        val = abs(int(v_inp))
-                        val = min(val, 20)
-                        v_exp = str(math.factorial(val))
-
-                    elif ("reverse number" in topic_lower or "reverse number" in q_str or "reverse a number" in q_str) and v_inp.replace("-", "").isdigit():
-                        clean_digits = v_inp.lstrip("-")
-                        rev = clean_digits[::-1]
-                        v_exp = f"-{rev.lstrip('0') or '0'}" if v_inp.startswith("-") else (rev.lstrip("0") or "0")
-
-                    elif ("prime" in topic_lower or "prime number" in q_str) and v_inp.replace("-", "").isdigit():
-                        num = int(v_inp)
-                        is_p = True if num > 1 else False
-                        for i in range(2, int(num**0.5) + 1):
-                            if num % i == 0:
-                                is_p = False
+                    # Split scenario text into context and task if task is embedded
+                    if ("Task:" in raw_scen or any(kw in raw_scen for kw in ["Calculate", "Find", "Determine", "What is", "How many"])) and (not raw_q or raw_q == raw_scen):
+                        for delimiter in ["Task:", "Question:", "Calculate", "Find", "Determine", "What is", "How many"]:
+                            if delimiter in raw_scen and raw_scen.index(delimiter) > 15:
+                                split_idx = raw_scen.index(delimiter)
+                                raw_q = raw_scen[split_idx:].strip()
+                                if raw_q.startswith("Task:"):
+                                    raw_q = raw_q[5:].strip()
+                                raw_scen = raw_scen[:split_idx].strip()
                                 break
-                        if v_exp.upper() in ["YES", "NO"]:
-                            v_exp = "YES" if is_p else "NO"
-                        elif v_exp in ["1", "0"]:
-                            v_exp = "1" if is_p else "0"
-                        else:
-                            v_exp = "True" if is_p else "False"
 
-                    elif ("sum of digits" in topic_lower or "sum of digits" in q_str) and any(c.isdigit() for c in v_inp):
-                        v_exp = str(sum(int(c) for c in v_inp if c.isdigit()))
+                    if not raw_scen:
+                        raw_scen = f"A real-world placement scenario involving {raw_topic} requiring precise calculation."
+                    
+                    if not raw_q or raw_q == raw_scen or len(raw_q) < 5:
+                        raw_q = f"Calculate the exact numerical result for this {raw_topic} problem."
 
-                    elif ("count digits" in topic_lower or "count digits" in q_str) and any(c.isdigit() for c in v_inp):
-                        v_exp = str(len([c for c in v_inp if c.isdigit()]))
+                    # Ensure question starts cleanly with a clear task command
+                    if not any(raw_q.lower().startswith(kw) for kw in ["calculate", "find", "determine", "what", "how", "solve", "compute"]):
+                        raw_q = f"Calculate {raw_q[0].lower() + raw_q[1:] if raw_q else 'the answer.'}"
 
-                    visible_tc = {"input": v_inp, "expectedOutput": v_exp, "output": v_exp}
-                    q["visibleTestCase"] = visible_tc
-                    q["visibleTestCases"] = [visible_tc]
-                    q["sampleInput"] = v_inp
-                    q["sampleOutput"] = v_exp
-                    q["exampleInput"] = v_inp
-                    q["exampleOutput"] = v_exp
-                    q["hiddenTestCases"] = []  # No hidden test cases
-                    q["testCases"] = {
-                        "visible": [{"input": v_inp, "output": v_exp}],
-                        "hidden": []
-                    }
-                    q["evaluation"] = {
-                        "visibleTestCasesOnly": True,
-                        "hiddenTestCases": False,
-                        "usesPrint": True,
-                        "usesReturn": False,
-                        "fullScoreOnlyIfVisibleTestCasePasses": True,
-                        "partialScoring": False
-                    }
+                    q["scenario"] = raw_scen
+                    q["question"] = raw_q
+                    q["problemStatement"] = f"{raw_scen}\n\nTask: {raw_q}\n\n{output_fmt}"
+                    q["candidateTask"] = raw_q
+
+                    if not q.get("explanation") or is_placeholder(str(q.get("explanation")), banned_outputs):
+                        q["explanation"] = f"Step-by-step mathematical/logical solution yielding expected answer: {clean_expected}."
+
+                    # Remove programming and SQL specific fields for Aptitude Scenarios
+                    q["starterCode"] = None
+                    q["starter_code"] = None
+                    q["databaseSchema"] = None
+                    q["sampleData"] = None
+                    q["functionSignature"] = None
+                    q["visibleTestCase"] = None
+                    q["visibleTestCases"] = None
+                    q["hiddenTestCases"] = None
+
+                elif q["subject"].upper() == "PYTHON":
+                    q = self._normalize_and_validate_python_question(q)
                 else:
                     scenario_bg = q.get("scenario") or q.get("problemStatement") or f"Real-world enterprise scenario assessing {q['subject']} - {q['topic']} skills."
                     sql_ex_in = str(q.get("exampleInput") or q.get("sampleInput") or "SalariedFlag = 1, CurrentFlag = 1").strip()
@@ -507,28 +782,36 @@ RESPONSE SCHEMA (RETURN RAW CLEAN JSON ONLY):
                     q["exampleOutput"] = sql_ex_out
                     q["sampleInput"] = sql_ex_in
                     q["sampleOutput"] = sql_ex_out
-                
-                problem_stmt = q.get("problemStatement") or q.get("scenario") or f"Write a solution for the given {q.get('topic', 'Logic')} task."
-                if any(banned in problem_stmt.lower() for banned in ["solve this coding problem", "complete the program", "write python code."]):
-                    problem_stmt = f"Given input for {q.get('topic', 'Logic')}, write a solution to compute and return the correct result."
 
-                task = q.get("candidateTask") or q.get("question") or problem_stmt
-                title_val = q.get("title") or f"{q.get('topic', 'Technical')} Challenge"
+                    problem_stmt = q.get("problemStatement") or q.get("scenario") or f"Write a solution for the given {q.get('topic', 'Logic')} task."
+                    if any(banned in problem_stmt.lower() for banned in ["solve this coding problem", "complete the program", "write python code."]):
+                        problem_stmt = f"Given input for {q.get('topic', 'Logic')}, write a solution to compute and return the correct result."
 
-                q["title"] = title_val
-                q["scenario"] = problem_stmt
-                q["problemStatement"] = problem_stmt
-                q["candidateTask"] = task
-                q["question"] = str(q.get("question") or task).strip()
-                if not q.get("exampleInput") or is_placeholder(str(q.get("exampleInput")), banned_inputs):
-                    q["exampleInput"] = q.get("sampleInput") or "madam"
-                if not q.get("exampleOutput") or is_placeholder(str(q.get("exampleOutput")), banned_outputs):
-                    q["exampleOutput"] = q.get("sampleOutput") or "True"
-                if not q.get("inputFormat"):
+                    task = q.get("candidateTask") or problem_stmt
+                    title_val = q.get("title") or f"{q.get('topic', 'Technical')} Challenge"
+
+                    q["title"] = title_val
+                    q["scenario"] = problem_stmt
+                    q["problemStatement"] = problem_stmt
+                    q["candidateTask"] = task
+                    q["question"] = str(q.get("question") or task).strip()
+
+                if q["subject"].upper() == "APTITUDE":
+                    q["exampleInput"] = None
+                    q["exampleOutput"] = None
+                    q["sampleInput"] = None
+                    q["sampleOutput"] = None
+                else:
+                    if not q.get("exampleInput") or is_placeholder(str(q.get("exampleInput")), banned_inputs):
+                        q["exampleInput"] = q.get("sampleInput") or ""
+                    if not q.get("exampleOutput") or is_placeholder(str(q.get("exampleOutput")), banned_outputs):
+                        q["exampleOutput"] = q.get("sampleOutput") or ""
+
+                if not q.get("inputFormat") and q["subject"].upper() != "APTITUDE":
                     q["inputFormat"] = "Standard line of input matching problem parameter requirements."
-                if not q.get("outputFormat"):
+                if not q.get("outputFormat") and q["subject"].upper() != "APTITUDE":
                     q["outputFormat"] = "Single line containing computed result."
-                if not q.get("constraints"):
+                if not q.get("constraints") and q["subject"].upper() != "APTITUDE":
                     q["constraints"] = ["1 <= N <= 1000, standard execution time and memory limits."]
                 elif isinstance(q.get("constraints"), str):
                     q["constraints"] = [q["constraints"]]

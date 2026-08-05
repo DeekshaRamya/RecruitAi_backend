@@ -74,6 +74,8 @@ class QuestionResponse(BaseModel):
     starterCode: Optional[str] = None
     inputFormat: Optional[str] = None
     outputFormat: Optional[str] = None
+    answerType: Optional[str] = Field(default=None, description="NUMBER or TEXT for Scenario questions")
+    placeholder: Optional[str] = Field(default=None, description="Placeholder text for input field")
 
     @field_validator("constraints", mode="before")
     @classmethod
@@ -112,6 +114,10 @@ class QuestionResponse(BaseModel):
                 self.expectedAnswer = self.correctAnswer
             if not self.correctAnswer and self.expectedAnswer:
                 self.correctAnswer = self.expectedAnswer
+
+            if self.subject and self.subject.strip().lower() == "aptitude":
+                self.answerType = (self.answerType or "NUMBER").upper()
+                self.placeholder = self.placeholder or "Enter your answer"
         else:
             self.type = "MCQ"
             if not self.options:

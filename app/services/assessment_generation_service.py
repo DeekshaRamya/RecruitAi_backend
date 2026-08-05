@@ -228,8 +228,8 @@ class AssessmentGenerationService:
                     q["sampleData"] = [f"-- Connected to table {target_table} on live AdventureWorks database."]
 
                 # 3. Automatically reference selected real table in editor placeholder
-                q["starterCode"] = f"-- Write your T-SQL query here against the live AdventureWorks database\nSELECT * FROM {target_table};"
-                q["starter_code"] = q["starterCode"]
+                q["starterCode"] = "-- Write your SQL query here"
+                q["starter_code"] = "-- Write your SQL query here"
 
                 # 4. Format tabular expected output from actual query execution results
                 columns = res.get("columns", [])
