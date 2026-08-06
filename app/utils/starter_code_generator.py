@@ -81,20 +81,40 @@ def generate_python_starter_code(
     sample_in = str(sample_in or "").strip()
     sample_lines = [l.strip() for l in sample_in.splitlines() if l.strip()]
 
-    # Extract function name and parameter names from AI signature if available
-    sig_raw = str(q.get("functionSignature") or q.get("starterCode") or "")
-    # The function name must always be solution
-    func_name = "solution"
+    # Extract function name and parameter names from AI signature/task if available
+    sig_raw = str(q.get("functionSignature") or q.get("starterCode") or q.get("starter_code") or q.get("task") or q.get("problemStatement") or "")
+    func_name = None
     ai_params = []
     
-    sig_match = re.search(r"def\s+(\w+)\s*\((.*?)\)", sig_raw)
+    banned_keywords = {"function", "python", "def", "write", "takes", "returns", "given", "that", "and", "a", "an", "the", "self"}
+
+    sig_match = re.search(r"def\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*\((.*?)\)", sig_raw)
     if not sig_match:
-        sig_match = re.search(r"(\w+)\s*\((.*?)\)", sig_raw)
+        sig_match = re.search(r"function\s+`?([a-zA-Z_][a-zA-Z0-9_]*)`?\s*\((.*?)\)", sig_raw, re.IGNORECASE)
+    if not sig_match:
+        sig_match = re.search(r"`([a-zA-Z_][a-zA-Z0-9_]*)\s*\((.*?)\)`", sig_raw)
+    if not sig_match:
+        sig_match = re.search(r"\b([a-zA-Z_][a-zA-Z0-9_]*)\s*\((.*?)\)", sig_raw)
 
     if sig_match:
+        fn = sig_match.group(1).strip()
+        if fn.lower() not in banned_keywords and fn.isidentifier():
+            func_name = fn
         p_str = sig_match.group(2).strip()
         if p_str:
-            ai_params = [p.strip() for p in p_str.split(",") if p.strip()]
+            ai_params = [p.strip().split(":")[0].strip().split("=")[0].strip() for p in p_str.split(",") if p.strip()]
+
+    if not func_name:
+        # Generate descriptive function name from topic or title
+        raw_topic = str(q.get("topic") or q.get("title") or "solution").lower()
+        clean_name = re.sub(r"[^a-zA-Z0-9_\s]", "", raw_topic).strip()
+        words = [w for w in clean_name.split() if w not in banned_keywords]
+        if words:
+            func_name = "_".join(words[:3])
+            if not func_name.isidentifier():
+                func_name = f"func_{func_name}"
+        else:
+            func_name = "solution"
 
     # Determine parameter names and types
     params: List[str] = []
@@ -132,9 +152,9 @@ def generate_python_starter_code(
             params.append(sanitize_param_name(p_n, "arg"))
             param_types.append(pt)
     else:
-        # 2. String-focused tasks with single string parameter
-        if any(w in q_text for w in ["vowel", "vowels", "palindrome", "reverse a string", "count vowels", "uppercase", "lowercase"]):
-            if "by k" in q_text or "k positions" in q_text or "k-th" in q_text:
+        # 2. String-focused tasks
+        if any(w in q_text for w in ["vowel", "vowels", "palindrome", "reverse a string", "count vowels", "uppercase", "lowercase", "text string", "truncate string"]):
+            if any(w in q_text for w in ["by k", "k positions", "k-th", "integer k", "and k", "k characters"]):
                 params = ["text", "k"]
                 param_types = ["string", "int"]
             elif "str1" in q_text or "two strings" in q_text or "merge string" in q_text:
@@ -144,12 +164,12 @@ def generate_python_starter_code(
                 params = ["text"]
                 param_types = ["string"]
 
-        # 3. List/Array tasks with single list parameter
-        elif any(w in q_text for w in ["sum of a list", "sum of list", "max value", "maximum value", "min value", "minimum value", "list of integers", "array sum", "prices", "bookstore"]):
-            if "target sum" in q_text or "search target" in q_text or "find target" in q_text:
+        # 3. List/Array tasks
+        elif any(w in q_text for w in ["list of numbers", "list of integers", "sum of a list", "sum of list", "max value", "maximum value", "min value", "minimum value", "array sum", "prices", "bookstore", "occurrences"]):
+            if any(w in q_text for w in ["target", "target sum", "search target", "find target"]):
                 params = ["numbers", "target"]
                 param_types = ["list", "int"]
-            elif "rotate" in q_text or "by k" in q_text or "k-th" in q_text:
+            elif any(w in q_text for w in ["rotate", "by k", "k-th"]):
                 params = ["numbers", "k"]
                 param_types = ["list", "int"]
             else:
@@ -159,14 +179,17 @@ def generate_python_starter_code(
 
         # 4. Matrix tasks
         elif "matrix" in q_text or "grid" in q_text or "diagonal" in q_text:
-            if "search target" in q_text or "find target" in q_text:
+            if "target" in q_text:
                 params = ["matrix", "target"]
                 param_types = ["matrix", "int"]
             else:
                 params = ["matrix"]
                 param_types = ["matrix"]
 
-        # 5. Multi-parameter tasks (price, tax / recharge, fee / a, b)
+        # 5. Multi-parameter tasks (price, tax / recharge, fee / a, b / 3 arrays)
+        elif "three arrays" in q_text or "3 arrays" in q_text:
+            params = ["arr1", "arr2", "arr3"]
+            param_types = ["list", "list", "list"]
         elif "price" in q_text and "tax" in q_text:
             params = ["price", "tax"]
             param_types = ["float", "float"]
@@ -179,8 +202,16 @@ def generate_python_starter_code(
 
         # 6. Fallback based on sample input or default to single parameter
         else:
-            sample_lines_cnt = len(sample_lines)
-            if sample_lines_cnt >= 2 and detect_line_type(sample_lines[0]) == "int" and detect_line_type(sample_lines[1]) in ("list", "space_separated_ints"):
+            if any(w in q_text for w in ["three arrays", "3 arrays"]):
+                params = ["arr1", "arr2", "arr3"]
+                param_types = ["list", "list", "list"]
+            elif "target" in q_text and any(w in q_text for w in ["number", "list", "array", "count"]):
+                params = ["numbers", "target"]
+                param_types = ["list", "int"]
+            elif any(w in q_text for w in ["integer k", "and k", "k characters"]):
+                params = ["text", "k"]
+                param_types = ["string", "int"]
+            elif sample_lines and len(sample_lines) >= 2 and detect_line_type(sample_lines[0]) == "int" and detect_line_type(sample_lines[1]) in ("list", "space_separated_ints"):
                 params = ["numbers"]
                 param_types = ["list"]
             elif "string" in q_text or "text" in q_text or "word" in q_text:

@@ -109,10 +109,12 @@ def compare_sql_datasets(cand_exec: Dict[str, Any], exp_exec: Dict[str, Any], q_
     """
     Compares candidate SQL execution result set against expected SQL execution result set.
     Returns True if both result sets are identical in terms of:
-    - Number of rows
-    - Number of columns
+    - Number of columns & column names
     - Column values & Row values
     - Respects row ordering ONLY if 'ORDER BY' is specified in problem statement.
+    Decouples UI preview limiting (5 rows) from evaluation ground truth.
+    If expected query has TOP/LIMIT or was truncated to 5 rows while candidate query returns full matching dataset (>=5 rows),
+    compares the top 5 rows to avoid penalizing candidate.
     Disregards query text syntax, SQL formatting, alias differences, and JOIN logic variations.
     """
     if not cand_exec.get("success") or not exp_exec.get("success"):
@@ -120,10 +122,6 @@ def compare_sql_datasets(cand_exec: Dict[str, Any], exp_exec: Dict[str, Any], q_
 
     cand_rows = cand_exec.get("rows") or cand_exec.get("data") or []
     exp_rows = exp_exec.get("rows") or exp_exec.get("data") or []
-
-    # Check number of rows
-    if len(cand_rows) != len(exp_rows):
-        return False
 
     # Check column count if column metadata is present
     cand_cols = cand_exec.get("columns")
@@ -159,18 +157,30 @@ def compare_sql_datasets(cand_exec: Dict[str, Any], exp_exec: Dict[str, Any], q_
     q_str_upper = str(q_text or "").upper()
     require_order = "ORDER BY" in q_str_upper
 
-    if require_order:
-        return cand_norm == exp_norm
-    else:
-        return sorted(cand_norm) == sorted(exp_norm)
+    # 1. Exact match on row count (complete dataset matching)
+    if len(cand_rows) == len(exp_rows):
+        if require_order:
+            return cand_norm == exp_norm
+        else:
+            return sorted(cand_norm) == sorted(exp_norm)
+
+    # 2. UI Preview fallback: If expected query was limited to 5 rows (preview) and candidate query returned full dataset (>=5 rows)
+    if len(exp_rows) == 5 and len(cand_rows) >= 5:
+        cand_top5 = cand_norm[:5]
+        if require_order:
+            return cand_top5 == exp_norm
+        else:
+            return sorted(cand_top5) == sorted(exp_norm)
+
+    return False
 
 
 async def evaluate_sql_question(cand_ans: str, q: Dict[str, Any], q_marks: float = 10.0) -> Dict[str, Any]:
     """
     Evaluates SQL Scenario-Based submission strictly using result set execution comparison.
     NEVER compares SQL text queries or uses AI string similarity.
-    Executes both candidate and expected queries against hidden datasets and computes score
-    solely from passed datasets.
+    Executes both candidate and expected queries against target datasets and computes score
+    solely after successful execution and dataset comparison.
     """
     cand_clean = (cand_ans or "").strip()
     expected_ans = str(q.get("expectedAnswer") or q.get("correctAnswer") or "").strip()
@@ -192,6 +202,13 @@ async def evaluate_sql_question(cand_ans: str, q: Dict[str, Any], q_marks: float
         from app.services.sql_scenario_service import SqlScenarioService
         sql_service = SqlScenarioService()
 
+        # Detailed Logging for Auditability & Diagnostics
+        logger.info("=" * 60)
+        logger.info(f"[SQL EVALUATION] Starting SQL Submission Evaluation for Topic: '{q.get('topic')}'")
+        logger.info(f"[SQL EVALUATION] Candidate SQL Query: {repr(cand_clean)}")
+        logger.info(f"[SQL EVALUATION] Recruiter Reference SQL Query: {repr(expected_ans)}")
+        logger.info("=" * 60)
+
         # Gather all test datasets (default live DB dataset + any hidden datasets)
         datasets = q.get("hiddenTestCases") or q.get("testCases", {}).get("hidden") or []
         if not isinstance(datasets, list) or len(datasets) == 0:
@@ -202,22 +219,74 @@ async def evaluate_sql_question(cand_ans: str, q: Dict[str, Any], q_marks: float
         last_cand_exec = None
         last_exp_exec = None
 
-        for ds in datasets:
-            exam_id = str(ds.get("name") or ds.get("id") or "sql_eval")
+        for idx, ds in enumerate(datasets):
+            exam_id = str(ds.get("name") or ds.get("id") or f"sql_eval_{idx+1}")
+            logger.info(f"[SQL EVALUATION] Executing Dataset #{idx+1}/{total_datasets} (exam_id='{exam_id}')")
+
+            # 1. Execute Candidate SQL Query
             cand_exec = await sql_service.execute_sql_via_api(query=cand_clean, exam_id=exam_id)
             last_cand_exec = cand_exec
 
-            if not cand_exec.get("success"):
-                continue
+            logger.info(f"[SQL EVALUATION] Candidate Execution Result: success={cand_exec.get('success')}, rowCount={cand_exec.get('rowCount')}, columns={cand_exec.get('columns')}, execTime={cand_exec.get('executionTime')}ms, error={cand_exec.get('error')}")
 
+            # Check for Infrastructure / Connection failure (DB or API unreachable)
+            if cand_exec.get("is_infrastructure_error"):
+                logger.error(f"[SQL EVALUATION] Candidate Query Execution failed due to Infrastructure/API Error: {cand_exec.get('error')}")
+                return {
+                    "status": "SYSTEM_ERROR",
+                    "is_correct": False,
+                    "marks_awarded": 0.0,
+                    "similarity_score": 0,
+                    "feedback": f"SQL Evaluation System Error: Unable to reach AdventureWorks SQL API ({cand_exec.get('error')}).",
+                    "strengths": "Query submitted.",
+                    "missing_points": "Infrastructure / DB connectivity timeout.",
+                    "suggested_improvement": "Please try re-evaluating when the database API is restored."
+                }
+
+            # Check if Candidate Query produced a SQL error (e.g. invalid column name, syntax error)
+            if not cand_exec.get("success"):
+                sql_err_msg = cand_exec.get("error") or "Syntax or Schema error"
+                logger.warning(f"[SQL EVALUATION] Candidate Query failed execution with SQL Error: {sql_err_msg}")
+                return {
+                    "status": "Incorrect",
+                    "is_correct": False,
+                    "marks_awarded": 0.0,
+                    "similarity_score": 0,
+                    "feedback": f"SQL Query Execution Error: {sql_err_msg}",
+                    "strengths": "Attempted SQL query.",
+                    "missing_points": f"SQL Server reported execution error: {sql_err_msg}",
+                    "suggested_improvement": "Check column names, table aliases, syntax, and joins against database schema."
+                }
+
+            # 2. Execute Recruiter Reference Query
             if expected_ans:
                 exp_exec = await sql_service.execute_sql_via_api(query=expected_ans, exam_id=exam_id)
                 last_exp_exec = exp_exec
+
+                logger.info(f"[SQL EVALUATION] Recruiter Execution Result: success={exp_exec.get('success')}, rowCount={exp_exec.get('rowCount')}, columns={exp_exec.get('columns')}, execTime={exp_exec.get('executionTime')}ms, error={exp_exec.get('error')}")
+
+                if exp_exec.get("is_infrastructure_error"):
+                    logger.error(f"[SQL EVALUATION] Recruiter Reference Query failed due to Infrastructure/API Error: {exp_exec.get('error')}")
+                    return {
+                        "status": "SYSTEM_ERROR",
+                        "is_correct": False,
+                        "marks_awarded": 0.0,
+                        "similarity_score": 0,
+                        "feedback": f"SQL Evaluation System Error: Unable to execute reference query via SQL API ({exp_exec.get('error')}).",
+                        "strengths": "Query submitted.",
+                        "missing_points": "Infrastructure / DB connectivity timeout.",
+                        "suggested_improvement": "Please try re-evaluating when the database API is restored."
+                    }
+
                 if exp_exec.get("success"):
-                    if compare_sql_datasets(cand_exec, exp_exec, q_text=q_text):
+                    # Compare datasets only when BOTH executions succeeded
+                    is_match = compare_sql_datasets(cand_exec, exp_exec, q_text=q_text)
+                    logger.info(f"[SQL EVALUATION] Dataset #{idx+1} Match Result: {is_match}")
+                    if is_match:
                         passed_datasets += 1
+                else:
+                    logger.warning(f"[SQL EVALUATION] Recruiter Reference Query failed execution: {exp_exec.get('error')}")
             else:
-                # If expected query not present, successful execution passes dataset
                 passed_datasets += 1
 
         if total_datasets == 0:
@@ -248,12 +317,19 @@ async def evaluate_sql_question(cand_ans: str, q: Dict[str, Any], q_marks: float
             }
         else:
             err_detail = ""
-            if last_cand_exec and not last_cand_exec.get("success"):
-                err_detail = f" Query execution error: {last_cand_exec.get('error') or 'syntax/schema error'}"
-            elif last_cand_exec and last_exp_exec:
+            if last_cand_exec and last_exp_exec:
                 cand_count = last_cand_exec.get("rowCount", len(last_cand_exec.get("rows", [])))
                 exp_count = last_exp_exec.get("rowCount", len(last_exp_exec.get("rows", [])))
-                err_detail = f" Result dataset mismatch (returned {cand_count} rows vs expected {exp_count} rows)."
+                cand_cols_cnt = len(last_cand_exec.get("columns", []))
+                exp_cols_cnt = len(last_exp_exec.get("columns", []))
+
+                if cand_count != exp_count:
+                    err_detail = f" Returned {cand_count} rows vs expected {exp_count} rows."
+                elif cand_cols_cnt != exp_cols_cnt:
+                    err_detail = f" Returned {cand_cols_cnt} columns vs expected {exp_cols_cnt} columns."
+                else:
+                    err_detail = " Result row values did not match expected dataset."
+
             return {
                 "status": "Incorrect",
                 "is_correct": False,
@@ -266,16 +342,16 @@ async def evaluate_sql_question(cand_ans: str, q: Dict[str, Any], q_marks: float
             }
 
     except Exception as ex:
-        logger.error(f"[evaluate_sql_question] Error evaluating SQL query: {ex}")
+        logger.error(f"[evaluate_sql_question] Error evaluating SQL query: {ex}", exc_info=True)
         return {
-            "status": "Incorrect",
+            "status": "SYSTEM_ERROR",
             "is_correct": False,
             "marks_awarded": 0.0,
             "similarity_score": 0,
-            "feedback": f"SQL Evaluation Error: {str(ex)}",
+            "feedback": f"SQL Evaluation System Error: {str(ex)}",
             "strengths": "Submitted SQL query.",
-            "missing_points": "Execution failed during dataset evaluation.",
-            "suggested_improvement": "Ensure valid T-SQL query."
+            "missing_points": f"Evaluation system exception: {str(ex)}",
+            "suggested_improvement": "Contact assessment system support or retry evaluation."
         }
 
 @router.post(

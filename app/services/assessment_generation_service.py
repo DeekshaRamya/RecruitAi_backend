@@ -1,4 +1,5 @@
 import logging
+from typing import Optional, List, Dict, Any
 from fastapi import HTTPException, status
 import httpx
 
@@ -62,7 +63,8 @@ class AssessmentGenerationService:
                     logger.info(f"[SQL Scenario Flow] Generating {sql_scenario_count} SQL Scenario questions via AdventureWorks API (http://172.176.122.4:5001/execute)...")
                     sql_scenarios = await self.sql_scenario_service.generate_sql_scenarios(
                         count=sql_scenario_count,
-                        difficulty_distribution=request.difficultyDistribution
+                        difficulty_distribution=request.difficultyDistribution,
+                        existing_questions=existing_questions
                     )
 
                     # Generate remaining questions (MCQs & non-SQL questions) via Azure OpenAI
@@ -172,20 +174,14 @@ class AssessmentGenerationService:
                 res = executor.run_sql(query=expected_query)
                 logger.info(f"[SQL Validation] Execution Result Status: {res.get('status')} | Rows returned: {res.get('rowCount')} | Error: {res.get('runtime_error')}")
 
-                # Check if query failed or referenced non-existent tables (like evaluation_records)
                 if res.get("status") != "Success" or not res.get("columns") or any(w in expected_query.lower() for w in ["evaluation_records", "dbo.orders", "users"]):
-                    logger.warning(f"[SQL Validation] Query invalid or failed execution: {res.get('runtime_error')}. Regenerating with verified live schema query.")
-                    fallback_queries = [
-                        ("SELECT TOP 5 BusinessEntityID, NationalIDNumber, JobTitle, HireDate FROM HumanResources.Employee WHERE MaritalStatus = 'M';", "HumanResources.Employee"),
-                        ("SELECT TOP 5 SalesOrderID, OrderDate, CustomerID, TotalDue FROM Sales.SalesOrderHeader ORDER BY OrderDate DESC;", "Sales.SalesOrderHeader"),
-                        ("SELECT TOP 5 BusinessEntityID, FirstName, LastName, PersonType FROM Person.Person WHERE PersonType = 'SC';", "Person.Person"),
-                        ("SELECT TOP 5 ProductID, Name, ProductNumber, ListPrice FROM Production.Product WHERE ListPrice > 0;", "Production.Product")
-                    ]
-                    selected_fb, _ = random.choice(fallback_queries)
-                    res = executor.run_sql(query=selected_fb)
-                    q["expectedAnswer"] = selected_fb
-                    q["correctAnswer"] = selected_fb
-                    expected_query = selected_fb
+                    logger.warning(f"[SQL Validation] Query invalid or failed execution: {res.get('runtime_error')}. Executing dynamic live schema query.")
+                    dynamic_target = list(tables_map.keys())[0] if tables_map else "HumanResources.Employee"
+                    dyn_query = f"SELECT * FROM {dynamic_target};"
+                    res = executor.run_sql(query=dyn_query)
+                    q["expectedAnswer"] = dyn_query
+                    q["correctAnswer"] = dyn_query
+                    expected_query = dyn_query
 
                 # Identify target schema and table name from verified query
                 target_table = None
@@ -194,7 +190,7 @@ class AssessmentGenerationService:
                         target_table = full_t_name
                         break
                 if not target_table:
-                    target_table = "HumanResources.Employee"
+                    target_table = list(tables_map.keys())[0] if tables_map else "Production.Product"
 
                 # 1. Populate real Schema definition in DDL format for DatabaseSchemaVisualizer
                 table_meta = tables_map.get(target_table, {})
@@ -203,7 +199,7 @@ class AssessmentGenerationService:
                     col_defs = ", ".join([f"{c['name']} {c['type']}{' PRIMARY KEY' if c.get('is_pk') else ''}" for c in cols])
                     q["databaseSchema"] = [f"-- Live SQL Server Schema\nCREATE TABLE {target_table} ({col_defs});"]
                 else:
-                    q["databaseSchema"] = [f"-- Live SQL Server Schema\nCREATE TABLE {target_table} (BusinessEntityID INT PRIMARY KEY, NationalIDNumber NVARCHAR, JobTitle NVARCHAR, HireDate DATE, MaritalStatus NCHAR, Gender NCHAR);"]
+                    q["databaseSchema"] = [f"-- Live SQL Server Schema\nCREATE TABLE {target_table};"]
 
                 # 2. Dynamically execute SELECT TOP 5 against SQL Server for Sample Data
                 logger.info(f"[SQL Validation] Retrieving real live sample data from SQL Server: SELECT TOP 5 * FROM {target_table}")
@@ -234,26 +230,31 @@ class AssessmentGenerationService:
                 # 4. Format tabular expected output from actual query execution results
                 columns = res.get("columns", [])
                 rows = res.get("rows", [])
-                markdown_table = self._format_rows_to_markdown_table(columns, rows)
-                q["exampleOutput"] = markdown_table
-                q["expectedOutput"] = markdown_table
+                full_markdown_table = self._format_rows_to_markdown_table(columns, rows, max_rows=None)
+                preview_markdown_table = self._format_rows_to_markdown_table(columns, rows, max_rows=5)
+                q["exampleOutput"] = preview_markdown_table
+                q["sampleOutput"] = preview_markdown_table
+                q["expectedOutput"] = full_markdown_table
+                q["expectedRows"] = rows
                 logger.info(f"[SQL Validation] Question validation successful for {target_table}. Expected output row count: {len(rows)}")
 
         return questions
 
     @staticmethod
-    def _format_rows_to_markdown_table(columns: list, rows: list, max_rows: int = 5) -> str:
+    def _format_rows_to_markdown_table(columns: list, rows: list, max_rows: Optional[int] = None) -> str:
         if not columns:
             return "No records found."
         lines = []
         lines.append("| " + " | ".join(columns) + " |")
         lines.append("| " + " | ".join(["---"] * len(columns)) + " |")
-        display_rows = rows[:max_rows]
+        display_rows = rows[:max_rows] if max_rows is not None else rows
         for row in display_rows:
             row_vals = [str(row.get(col, "")) if row.get(col) is not None else "NULL" for col in columns]
             lines.append("| " + " | ".join(row_vals) + " |")
-        if len(rows) > max_rows:
+        if max_rows is not None and len(rows) > max_rows:
             lines.append(f"*(showing top {max_rows} of {len(rows)} returned records)*")
+        elif len(rows) > 0:
+            lines.append(f"*(total {len(rows)} records returned)*")
         return "\n".join(lines)
 
     async def _fetch_existing_questions(self) -> list:

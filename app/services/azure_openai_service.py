@@ -8,6 +8,241 @@ from app.schemas.interview import InterviewGenerateRequest, InterviewEvaluateReq
 
 logger = logging.getLogger("recruitai-backend.azure_openai_service")
 
+def validate_sql_question(q: dict) -> bool:
+    """
+    Validates SQL Scenario-Based questions against strict standardized template rules:
+    ✓ Scenario exists (2–4 sentences, business context)
+    ✓ Task exists (explicit instructions)
+    ✓ Input/Output Format exists ("Query the live database and return these columns...")
+    ✓ Every required table is explicitly mentioned (schema.tablename)
+    ✓ Every required table explains why it is being used (e.g., "(to get ...)")
+    ✓ Required columns are explicitly mentioned
+    ✓ JOIN conditions explicitly mentioned if query uses JOIN
+    ✓ WHERE filtering conditions explicitly mentioned if query uses WHERE
+    ✓ GROUP BY specified if query uses GROUP BY
+    ✓ HAVING specified if query uses HAVING
+    ✓ ORDER BY specified if query uses ORDER BY
+    ✓ Output columns are listed in order
+    """
+    scenario = str(q.get("scenario") or "").strip()
+    task = str(q.get("task") or q.get("candidateTask") or "").strip()
+    prob_stmt = str(q.get("problemStatement") or q.get("question") or "").strip()
+    io_fmt = str(q.get("inputOutputFormat") or q.get("inputFormat") or "").strip()
+    expected_query = str(q.get("expectedAnswer") or q.get("correctAnswer") or "").strip()
+
+    combined_text = f"{scenario} {task} {prob_stmt} {io_fmt}".lower()
+    query_lower = expected_query.lower()
+
+    if not scenario or len(scenario) < 15:
+        logger.warning(f"[SQL Validation Fail] Missing or short scenario: '{scenario}'")
+        return False
+
+    if not task and "task:" not in prob_stmt.lower():
+        logger.warning("[SQL Validation Fail] Missing task specification.")
+        return False
+
+    if not io_fmt and "input/output format" not in prob_stmt.lower() and "return these columns" not in combined_text:
+        logger.warning("[SQL Validation Fail] Missing Input/Output format specification.")
+        return False
+
+    if not any(schema in combined_text for schema in ["humanresources.", "sales.", "production.", "purchasing.", "person."]):
+        logger.warning("[SQL Validation Fail] Database schema table names not explicitly mentioned.")
+        return False
+
+    if not any(why_kw in combined_text for why_kw in ["(to get", "to get", "to retrieve", "using", "for"]):
+        logger.warning("[SQL Validation Fail] Explanation of why tables are used is missing.")
+        return False
+
+    if not any(kw in combined_text for kw in ["column", "select", "retrieve", "return", "columns"]):
+        logger.warning("[SQL Validation Fail] Required columns not explicitly mentioned.")
+        return False
+
+    if "join" in query_lower and not any(w in combined_text for w in ["join", "on", "combine", "matching", "related", "connected", "table", "using"]):
+        logger.warning("[SQL Validation Fail] Query uses JOIN but JOIN condition is not specified in Task.")
+        return False
+
+    if "where" in query_lower and not any(w in combined_text for w in ["where", "filter", "active", "flag", "equal", "only", "with", "for", "in", "greater", "less", "whose", "status"]):
+        logger.warning("[SQL Validation Fail] Query uses WHERE but filtering condition is not specified in Task.")
+        return False
+
+    if "group by" in query_lower and not any(w in combined_text for w in ["group", "aggregate", "total", "by", "per", "each", "count", "sum", "avg", "summary"]):
+        logger.warning("[SQL Validation Fail] Query uses GROUP BY but GROUP BY requirement is not specified in Task.")
+        return False
+
+    if "having" in query_lower and not any(w in combined_text for w in ["having", "greater", "more", "filter", "exceed", "limit", "than"]):
+        logger.warning("[SQL Validation Fail] Query uses HAVING but HAVING requirement is not specified in Task.")
+        return False
+
+    if "order by" in query_lower and not any(w in combined_text for w in ["order", "sort", "top", "highest", "lowest", "rank", "list", "descending", "ascending", "alphabetical"]):
+        logger.warning("[SQL Validation Fail] Query uses ORDER BY but ORDER BY requirement is not specified in Task.")
+        return False
+
+    return True
+
+
+def validate_python_question(q: dict) -> bool:
+    """
+    Validates Python Scenario-Based questions against the strict template rules:
+    - Scenario exists
+    - Task exists
+    - Input/Output Format exists
+    - Example Input exists
+    - Example Output exists
+    - Function name explicitly mentioned (e.g. solution)
+    - Parameter names explicitly mentioned
+    - Input type specified
+    - Output type specified
+    - Example is logically correct (valid sample input/output strings)
+    - Starter code matches function name and parameters in the Task
+    """
+    scenario = str(q.get("scenario") or "").strip()
+    task = str(q.get("task") or q.get("candidateTask") or "").strip()
+    prob_stmt = str(q.get("problemStatement") or q.get("question") or "").strip()
+    in_fmt = str(q.get("inputFormat") or "").strip()
+    out_fmt = str(q.get("outputFormat") or "").strip()
+    sample_in = str(q.get("sampleInput") or q.get("exampleInput") or "").strip()
+    sample_out = str(q.get("sampleOutput") or q.get("exampleOutput") or "").strip()
+    starter = str(q.get("starterCode") or q.get("starter_code") or "").strip()
+
+    combined_text = f"{scenario} {task} {prob_stmt}".lower()
+
+    if not scenario or len(scenario) < 15:
+        logger.warning(f"[Python Validation Fail] Missing scenario: '{scenario}'")
+        return False
+
+    if not task and "task:" not in prob_stmt.lower():
+        logger.warning("[Python Validation Fail] Missing task specification.")
+        return False
+
+    if not in_fmt and "input type:" not in combined_text and "input format:" not in combined_text and "input is a" not in combined_text:
+        logger.warning("[Python Validation Fail] Missing input format specification.")
+        return False
+
+    if not out_fmt and "output type:" not in combined_text and "output format:" not in combined_text and "output is a" not in combined_text and "return type:" not in combined_text:
+        logger.warning("[Python Validation Fail] Missing output format specification.")
+        return False
+
+    if not sample_in or any(b in sample_in.lower() for b in ["placeholder", "tbd", "n/a", "no input"]):
+        logger.warning(f"[Python Validation Fail] Missing or invalid example input: '{sample_in}'")
+        return False
+
+    if not sample_out or any(b in sample_out.lower() for b in ["placeholder", "tbd", "n/a", "no output"]):
+        logger.warning(f"[Python Validation Fail] Missing or invalid example output: '{sample_out}'")
+        return False
+
+    sig_match = re.search(r"def\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*\((.*?)\)", starter)
+    if not sig_match:
+        sig_match = re.search(r"([a-zA-Z_][a-zA-Z0-9_]*)\s*\((.*?)\)", starter)
+
+    if not sig_match:
+        logger.warning("[Python Validation Fail] Cannot extract function signature from starter code.")
+        return False
+
+    func_name_in_starter = sig_match.group(1)
+    if func_name_in_starter.lower() not in combined_text.lower() and func_name_in_starter not in starter:
+        logger.warning(f"[Python Validation Fail] Function name '{func_name_in_starter}' not mentioned in Task.")
+        return False
+
+    params = [p.strip() for p in sig_match.group(2).split(",") if p.strip()]
+    if not params:
+        logger.warning("[Python Validation Fail] Parameter names not specified in function signature.")
+        return False
+
+    for param in params:
+        if param not in combined_text and param not in starter:
+            logger.warning(f"[Python Validation Fail] Parameter '{param}' not mentioned in Task text.")
+            return False
+
+    if not any(kw in f"{in_fmt} {combined_text}".lower() for kw in ["list", "int", "str", "float", "matrix", "boolean", "array", "text", "number"]):
+        logger.warning("[Python Validation Fail] Input type not explicitly specified.")
+        return False
+
+    if not any(kw in f"{out_fmt} {combined_text}".lower() for kw in ["list", "int", "str", "float", "matrix", "boolean", "return", "integer", "string"]):
+        logger.warning("[Python Validation Fail] Output type not explicitly specified.")
+        return False
+
+    return True
+
+
+def is_duplicate_or_similar(
+    q: dict, 
+    existing_questions: Optional[List[Any]] = None, 
+    generated_so_far: Optional[List[dict]] = None
+) -> bool:
+    """
+    Compares a generated question with previously generated questions (across assessments
+    and within the current generation session).
+    Returns True if similarity is high (same scenario, same business context, same logic, 
+    or same solution approach), meaning it must be discarded.
+    """
+    from difflib import SequenceMatcher
+
+    def get_clean_text(item: Any) -> str:
+        if isinstance(item, dict):
+            s = f"{item.get('topic', '')} {item.get('scenario', '')} {item.get('task', '')} {item.get('problemStatement', '')} {item.get('question', '')} {item.get('expectedAnswer', '')}"
+        else:
+            s = str(item or "")
+        s = re.sub(r'[^\w\s]', ' ', s.lower())
+        return " ".join(s.split())
+
+    q_text = get_clean_text(q)
+    if not q_text or len(q_text) < 10:
+        return False
+
+    q_words = set(q_text.split())
+
+    # 1. Compare against existing questions across assessments
+    if existing_questions:
+        for ex in existing_questions:
+            ex_text = get_clean_text(ex)
+            if not ex_text or len(ex_text) < 10:
+                continue
+
+            seq_ratio = SequenceMatcher(None, q_text, ex_text).ratio()
+            if seq_ratio > 0.60:
+                logger.warning(f"[Similarity Filter] Question discarded: high sequence similarity ({seq_ratio:.2f}) with existing question.")
+                return True
+
+            ex_words = set(ex_text.split())
+            if q_words and ex_words:
+                intersection = len(q_words.intersection(ex_words))
+                union = float(len(q_words.union(ex_words)))
+                jaccard = intersection / union if union > 0 else 0
+                if jaccard > 0.58:
+                    logger.warning(f"[Similarity Filter] Question discarded: high word Jaccard similarity ({jaccard:.2f}) with existing question.")
+                    return True
+
+    # 2. Compare against questions generated so far in current assessment session
+    if generated_so_far:
+        for prev in generated_so_far:
+            prev_text = get_clean_text(prev)
+            if not prev_text or len(prev_text) < 10:
+                continue
+
+            seq_ratio = SequenceMatcher(None, q_text, prev_text).ratio()
+            if seq_ratio > 0.60:
+                logger.warning(f"[Similarity Filter] Question discarded: high sequence similarity ({seq_ratio:.2f}) with session question.")
+                return True
+
+            prev_words = set(prev_text.split())
+            if q_words and prev_words:
+                intersection = len(q_words.intersection(prev_words))
+                union = float(len(q_words.union(prev_words)))
+                jaccard = intersection / union if union > 0 else 0
+                if jaccard > 0.58:
+                    logger.warning(f"[Similarity Filter] Question discarded: high word Jaccard similarity ({jaccard:.2f}) with session question.")
+                    return True
+
+            q_topic = str(q.get("topic", "")).strip().lower()
+            prev_topic = str(prev.get("topic", "")).strip().lower()
+            q_ans = str(q.get("expectedAnswer") or q.get("correctAnswer") or "").strip().lower()
+            prev_ans = str(prev.get("expectedAnswer") or prev.get("correctAnswer") or "").strip().lower()
+            if q_topic and q_topic == prev_topic and q_ans and q_ans == prev_ans:
+                logger.warning(f"[Similarity Filter] Question discarded: identical topic and expected answer with session question.")
+                return True
+
+    return False
+
 class AzureOpenAIService:
     def __init__(self):
         self.client = AzureOpenAIClient()
@@ -60,7 +295,134 @@ class AzureOpenAIService:
             raise ValueError("Azure OpenAI response is missing the 'questions' list key")
 
         # 4. Validate and sanitize generated questions for strict quality compliance
-        return self._clean_and_validate_questions(data["questions"], request.subjects)
+        return self._clean_and_validate_questions(data["questions"], request.subjects, existing_questions=existing_questions)
+
+    async def generate_dynamic_sql_scenarios(
+        self,
+        count: int,
+        difficulty_distribution: Any,
+        existing_questions: Optional[List[str]] = None,
+        generated_so_far: Optional[List[dict]] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Calls Azure OpenAI API client to generate brand-new, unique SQL Scenario questions
+        strictly grounded in the live AdventureWorks database schema.
+        """
+        import uuid
+        import time
+        from app.services.sql_schema_service import SqlSchemaService
+
+        seed = f"sql-scenario-{uuid.uuid4().hex[:8]}-{int(time.time()*1000)}"
+        schema_text = SqlSchemaService.get_live_schema_text()
+
+        easy_pct = getattr(difficulty_distribution, 'easy', 33)
+        medium_pct = getattr(difficulty_distribution, 'medium', 34)
+        easy_count = round(count * easy_pct / 100.0)
+        medium_count = round(count * medium_pct / 100.0)
+        hard_count = count - (easy_count + medium_count)
+        if hard_count < 0:
+            hard_count = 0
+
+        ex_context = ""
+        if existing_questions:
+            clean_ex = [f"- {q}" for q in existing_questions if q and len(str(q).strip()) > 5]
+            if clean_ex:
+                ex_context = "\nEXISTING QUESTIONS TO STRICTLY EXCLUDE (DO NOT REUSE OR REPEAT):\n" + "\n".join(clean_ex[:30]) + "\n"
+
+        prompt = f"""Generate {count} BRAND NEW, 100% UNIQUE AdventureWorks Scenario-Based SQL Assessment Questions for candidates.
+
+UNIQUE GENERATION SEED: {seed}
+{ex_context}
+LIVE ADVENTUREWORKS DATABASE SCHEMA DETAILS:
+{schema_text}
+
+TARGET QUESTION COUNT & DIFFICULTY BREAKDOWN:
+- Total SQL Scenario Questions Required: {count}
+- Difficulty Distribution: Easy ~{easy_count}, Medium ~{medium_count}, Hard ~{hard_count}
+
+MANDATORY RULES FOR EVERY GENERATED SQL QUESTION (STRICT STANDARDIZED TEMPLATE & HIGH READABILITY):
+
+1. EVERY SQL QUESTION MUST FOLLOW EXACTLY THIS 3-PART FORMAT (DO NOT ALTER SECTION NAMES OR ORDER):
+
+### Scenario:
+Write a realistic business scenario in 2–4 sentences.
+
+---
+
+### Task:
+Write the task using short, readable sentences. NEVER generate a single long paragraph.
+
+Whenever a table is mentioned, write it on its OWN logical line using this exact format:
+Use **Schema.TableName** (to get Column1, Column2, Column3).
+
+Example table usage lines:
+Use **Production.ProductInventory** (to get ProductID and Quantity).
+Use **Production.Product** (to get Name using ProductID).
+
+After explaining each table on its own line, list the remaining requirements separately as clean bullet points:
+- Return ProductID, Name and TotalQuantity.
+- Filter only active records where SalariedFlag = 1.
+- Group the rows by product.
+- Sort by TotalQuantity descending.
+- Then sort by ProductID ascending.
+
+---
+
+### Input/Output Format:
+Query the live database and return these columns:
+
+- Column1
+- Column2
+- Column3
+
+2. STRICT READABILITY RULES:
+   - Bold every database table name (e.g. **Production.ProductInventory**).
+   - Immediately explain purpose inside parentheses (to get Column1, Column2).
+   - Write every table explanation on its own line.
+   - List filtering, joins, grouping, sorting, and output requirements as bullet points.
+   - NEVER create one long paragraph for the Task section.
+
+3. SOLUTION QUERY ("expectedAnswer"):
+   - Must be a 100% valid T-SQL query executable on SQL Server against the AdventureWorks database.
+   - Do NOT include "TOP 5", "LIMIT 5", "FETCH FIRST", or any row-limiting clause in the query UNLESS the task explicitly instructs the candidate to return only a specific limited number of rows (e.g., 'Return top 5 rows'). Write the complete reference query returning the full matching dataset.
+   - NEVER use imaginary tables like 'orders', 'users', or 'evaluation_records'. ONLY use tables defined in the schema above.
+
+4. UNIQUENESS & NOVELTY MANDATE:
+   - Every question must test a DIFFERENT business scenario and database table across the 5 schemas (HumanResources, Sales, Production, Purchasing, Person).
+   - DO NOT repeat or reuse previously generated scenarios, business context, or queries.
+
+RETURN ONLY A CLEAN JSON OBJECT WITH THE FOLLOWING SCHEMA:
+{{
+  "questions": [
+    {{
+      "subject": "SQL",
+      "topic": "<String: Topic name generated dynamically>",
+      "type": "SCENARIO",
+      "difficulty": "<String: Easy|Medium|Hard>",
+      "scenario": "<String: Dynamically generated 2-4 sentence business scenario>",
+      "task": "<String: Dynamically generated task mentioning exact schema tables, why used, columns, joins, filter, group by, order by>",
+      "inputOutputFormat": "Input/Output Format: Query the live database and return these columns:\\n\\n<Column1>\\n\\n<Column2>",
+      "problemStatement": "### Scenario:\\n<Scenario text>\\n\\n---\\n\\n### Task:\\n<Task text>\\n\\n---\\n\\n### Input/Output Format:\\n<Input/Output Format text>",
+      "candidateTask": "<String: Concise task summary>",
+      "expectedAnswer": "<String: Dynamically generated standard T-SQL query returning full matching dataset>",
+      "evaluationCriteria": "<String: Candidate evaluation criteria>",
+      "explanation": "<String: Detailed step-by-step query explanation>"
+    }}
+  ]
+}}"""
+
+        system_msg = (
+            "You are an expert SQL assessment developer. You generate brand-new, unique T-SQL scenario questions for recruitment exams strictly based on the AdventureWorks SQL Server database schema."
+        )
+
+        raw_response = await self.client.generate_chat_completion(prompt, system_msg)
+        cleaned_json = self._clean_json(raw_response)
+        try:
+            data = json.loads(cleaned_json)
+            return data.get("questions", [])
+        except Exception as e:
+            logger.error(f"[AzureOpenAIService] Failed to parse dynamic SQL scenario response: {e}. Raw response: {raw_response}")
+            return []
 
     def _build_prompt(
         self, 
@@ -133,22 +495,22 @@ CRITICAL QUESTION NOVELTY & UNIQUENESS MANDATE (STRICT COMPLIANCE REQUIRED):
 4. APTITUDE ASSESSMENT MANDATE (STRICT COMPLIANCE FOR SUBJECT "Aptitude"):
    - TOPICS: Questions MUST be generated ONLY from standard placement topics: LCM, HCF, Average, Profit and Loss, Percentage, Ratio and Proportion, Simple Interest, Compound Interest, Time and Work, Time Speed and Distance, Pipes and Cisterns, Ages, Partnership, Mixture and Alligation, Number System, Divisibility, Simplification, Probability, Permutation and Combination, Data Interpretation, Series, Calendar, Clock, Blood Relations, Direction Sense, Coding-Decoding, Seating Arrangement, Logical Reasoning.
    - QUESTION TYPES:
-     * MCQ Questions (`"type": "MCQ"`):
+     * MCQ Questions (`"type"`: `"MCQ"`):
        - Formulate a clear placement-exam style question.
        - Provide EXACTLY FOUR realistic option choices in `"options"`.
        - Exactly ONE correct option choice in `"correctAnswer"`.
        - Detailed step-by-step mathematical or logical reasoning in `"explanation"`.
-     * Scenario-Based Questions (`"type": "SCENARIO"`):
+     * Scenario-Based Questions (`"type"`: `"SCENARIO"`):
        - DO NOT generate options (`"options"` MUST BE null / omitted). NEVER generate MCQ options for Scenario-Based Aptitude questions under any circumstance.
        - ALWAYS generate complete, self-contained, and fully detailed questions. NEVER generate truncated or incomplete questions.
-       - MUST follow this exact 4-part structure:
-         1. `"scenario"`: Full real-world / business context containing all necessary numerical values and parameters. (e.g. "An employee deposits $12,000 in a savings scheme offering simple interest at 7% per annum for 3 years.")
-         2. `"question"`: Explicit calculation task asking what the candidate must calculate. (e.g. "Calculate the simple interest earned after 3 years.")
+       - MUST follow this structure:
+         1. `"scenario"`: Full real-world / business context containing all necessary numerical values and parameters.
+         2. `"question"`: Explicit calculation task asking what the candidate must calculate.
          3. `"problemStatement"`: Full combined problem statement (Scenario + Task).
          4. `"placeholder"`: `"Enter your answer"`
        - MUST also include:
          * `"answerType"`: `"NUMBER"` or `"TEXT"`
-         * `"expectedAnswer"` and `"correctAnswer"`: exact expected numerical/text result string (e.g. `"2520"`)
+         * `"expectedAnswer"` and `"correctAnswer"`: exact expected numerical/text result string
          * `"explanation"`: detailed step-by-step calculation or reasoning.
        - NEVER generate incomplete questions such as returning only a scenario description without the actual calculation task request.
    - DIFFICULTY CALIBRATION FOR APTITUDE:
@@ -159,9 +521,8 @@ CRITICAL QUESTION NOVELTY & UNIQUENESS MANDATE (STRICT COMPLIANCE REQUIRED):
 
 5. SCENARIO-BASED PYTHON CODING QUESTIONS:
    - STRICT MANDATE FOR REAL-WORLD SCENARIOS: Every Python coding question MUST be framed as a real-world scenario (e.g., School, College, Library, Hospital, Railway, Airport, Cricket, Restaurant, Shopping Mall, Parking, Employee Salary, Student Marks, Banking, Delivery, Weather, Attendance, Electricity Bill, Mobile Recharge, Hotel, Supermarket, Inventory, Online Shopping, Movie Ticket Booking, Examination, Bus Reservation).
-   - BAN ON PLAIN TEXTBOOK QUESTIONS: Never generate plain textbook questions like "Find the factorial" or "Check palindrome". Always wrap every question into a real-world scenario.
-   - ALLOWED BEGINNER / INTERMEDIATE TOPICS: Generate ONLY from beginner or intermediate Python concepts.
-   - CANDIDATE OUTPUT FORMAT: Candidates solve using print(). Do NOT expect return.
+   - BAN ON PLAIN TEXTBOOK QUESTIONS: Never generate plain textbook or generic algorithm questions without business context. Always wrap every question into a real-world scenario.
+   - ALLOWED BEGINNER / INTERMEDIATE TOPICS: Generate ONLY from beginner or int    - DYNAMIC FUNCTION SIGNATURE MANDATE: Every Python question MUST specify a descriptive function name and parameter list matching the task (e.g., Write a Python function `filter_even(numbers)` or `calculate_bonus(salary, percentage)`). NEVER default to generic function names like `solution`, `solve`, or `process` unless explicitly required by the business scenario.
    - SAMPLE TEST CASE ONLY: Generate exactly ONE visible Sample Input (`sampleInput`) and Sample Output (`sampleOutput`).
 
 6. TOPIC RELEVANCE:
@@ -171,147 +532,195 @@ RESPONSE SCHEMA (RETURN RAW CLEAN JSON ONLY):
 {{
   "questions": [
     {{
-      "subject": "Aptitude",
-      "topic": "Time Speed and Distance",
+      "subject": "<String: Subject requested>",
+      "topic": "<String: Topic generated dynamically>",
       "type": "MCQ",
-      "difficulty": "Easy",
-      "question": "A train 150 meters long is running at a speed of 54 km/hr. How much time will it take to cross a telegraph post?",
-      "options": ["8 seconds", "10 seconds", "12 seconds", "15 seconds"],
-      "correctAnswer": "10 seconds",
-      "explanation": "Speed in m/s = 54 * (5/18) = 15 m/s. Time = Distance / Speed = 150 / 15 = 10 seconds."
+      "difficulty": "<String: Easy|Medium|Hard>",
+      "question": "<String: Dynamically generated MCQ question statement>",
+      "options": ["<Option A>", "<Option B>", "<Option C>", "<Option D>"],
+      "correctAnswer": "<String: Exactly one correct option choice matching an item in options>",
+      "explanation": "<String: Detailed step-by-step reasoning or explanation>"
     }},
     {{
-      "subject": "Aptitude",
-      "topic": "Profit and Loss",
+      "subject": "<String: Subject requested>",
+      "topic": "<String: Topic generated dynamically>",
       "type": "SCENARIO",
-      "difficulty": "Medium",
-      "scenario": "A merchant marks his goods 20% above the cost price and allows a discount of 10% on the marked price for cash payment.",
-      "question": "Calculate the merchant's net profit percentage.",
-      "answerType": "NUMBER",
-      "placeholder": "Enter your answer",
-      "expectedAnswer": "8",
-      "correctAnswer": "8",
-      "options": null,
-      "explanation": "Let Cost Price = 100. Marked Price = 120. Selling Price = 120 - 10% of 120 = 108. Net Profit = 108 - 100 = 8%."
-    }},
-    {{
-      "subject": "Python",
-      "topic": "Strings",
-      "type": "MCQ",
-      "difficulty": "Easy",
-      "question": "Which Python string method is used to convert all characters in a string to uppercase?",
-      "options": ["upper()", "toUpper()", "uppercase()", "raise_case()"],
-      "correctAnswer": "upper()",
-      "explanation": "The upper() method returns a copy of the string converted to uppercase."
-    }},
-    {{
-      "subject": "SQL",
-      "topic": "Filtering & Sorting Employee Data",
-      "type": "SCENARIO",
-      "difficulty": "Hard",
-      "scenario": "You are a Senior Data Analyst working with the AdventureWorks Human Resources department. Management needs an accurate list of active salaried employees to analyze organizational demographics and vacation allowances.",
-      "question": "Write an SQL query to retrieve the BusinessEntityID, NationalIDNumber, JobTitle, and VacationHours for all salaried employees whose current record is active.",
-      "problemStatement": "Using the 'HumanResources.Employee' table from the AdventureWorks schema (columns: BusinessEntityID, NationalIDNumber, JobTitle, SalariedFlag, CurrentFlag, VacationHours), retrieve all employees where SalariedFlag = 1 and CurrentFlag = 1, ordered descending by VacationHours.",
-      "candidateTask": "Write a clean T-SQL SELECT query against HumanResources.Employee filtering by SalariedFlag = 1 and CurrentFlag = 1, sorting by VacationHours DESC.",
-      "expectedAnswer": "SELECT BusinessEntityID, NationalIDNumber, JobTitle, VacationHours FROM HumanResources.Employee WHERE SalariedFlag = 1 AND CurrentFlag = 1 ORDER BY VacationHours DESC;",
-      "evaluationCriteria": "Correct usage of HumanResources.Employee schema/table name, valid WHERE clauses on SalariedFlag and CurrentFlag, and proper ORDER BY descending.",
-      "correctAnswer": "SELECT BusinessEntityID, NationalIDNumber, JobTitle, VacationHours FROM HumanResources.Employee WHERE SalariedFlag = 1 AND CurrentFlag = 1 ORDER BY VacationHours DESC;",
-      "explanation": "Filtering by SalariedFlag = 1 and CurrentFlag = 1 isolates active salaried staff, while ORDER BY VacationHours DESC lists employees with the highest leave accumulation first.",
-      "databaseSchema": ["-- Schema table: HumanResources.Employee (BusinessEntityID INT PK, NationalIDNumber NVARCHAR, JobTitle NVARCHAR, SalariedFlag BIT, CurrentFlag BIT, VacationHours SMALLINT)"],
-      "sampleData": ["-- Live data exists on the connected AdventureWorks SQL Server"]
+      "difficulty": "<String: Easy|Medium|Hard>",
+      "scenario": "<String: Dynamically generated real-world/business context>",
+      "question": "<String: Explicit task instructions generated dynamically by AI>",
+      "task": "<String: Explicit task instructions generated dynamically by AI>",
+      "problemStatement": "### Scenario:\\n<Scenario text>\\n\\n---\\n\\n### Task:\\n<Task text>\\n\\n---\\n\\n### Input/Output Format:\\n<Input/Output Format text>\\n\\n---\\n\\n### Example:\\nInput: <Sample Input>\\nOutput: <Sample Output>",
+      "candidateTask": "<String: Short task summary>",
+      "starterCode": "def <dynamic_func_name>(<params>):\\n    pass",
+      "sampleInput": "<String: Valid sample input>",
+      "sampleOutput": "<String: Valid sample output>",
+      "expectedAnswer": "<String: Dynamic solution query or code>",
+      "explanation": "<String: Detailed step-by-step explanation>"d step-by-step explanation>"
     }}
   ]
 }}"""
         return prompt
 
-    def _clean_and_validate_questions(self, questions: List[Dict[str, Any]], allowed_subjects: List[str]) -> List[Dict[str, Any]]:
+    def _normalize_and_validate_sql_question(self, q: dict) -> dict:
         """
-        Validates and refines each generated question to guarantee clarity, correct schema,
-        strict distractor guidelines (no 'All/None of the above'), valid SQL/Python structures,
-        and high-quality recruiter explanations.
+        Validates and normalizes SQL scenario questions to enforce 100% adherence
+        to strict readability rules:
+        - Scenario: 2-4 sentences business scenario
+        - Task: Short sentences, bold table names (**Schema.Table**) with purpose in parentheses on separate lines,
+                followed by bulleted requirements for column selection, joins, filtering, grouping, and sorting.
+        - Input/Output Format: Clean bulleted list of output columns
+        - ProblemStatement: Standardized 3-part layout with '---' section dividers
         """
-        banned_phrases = ["all of the above", "none of the above", "all of these", "none of these"]
-        banned_inputs = ["no input", "no input.", "n/a", "none", "null", "", "-", "tbd", "write python code", "solve the problem", "solve the given coding problem", "complete the function", "placeholder"]
-        banned_outputs = ["no output", "no output.", "n/a", "none", "null", "", "-", "tbd", "placeholder"]
+        import re
 
-        def is_placeholder(val: str, banned_list: list) -> bool:
-            clean_v = str(val or "").strip().lower()
-            if clean_v in banned_list:
-                return True
-            if any(b in clean_v for b in ["no input", "no output", "n/a", "tbd"]):
-                return True
-            return False
+        scen_raw = str(q.get("scenario") or "").strip()
+        task_raw = str(q.get("task") or q.get("candidateTask") or "").strip()
+        prob_raw = str(q.get("problemStatement") or q.get("question") or "").strip()
+        expected_query = str(q.get("expectedAnswer") or q.get("correctAnswer") or "").strip()
 
-        cleaned_questions = []
-
-        for q in questions:
-            # 1. Subject and Topic validation
-            subject = q.get("subject", allowed_subjects[0])
-            if subject not in allowed_subjects:
-                subject = allowed_subjects[0]
-            q["subject"] = subject
-            q["topic"] = q.get("topic") or "General"
-
-            # 2. Type & Difficulty normalization
-            q_type = str(q.get("type", "MCQ")).upper()
-            if q_type in {"SCENARIO", "CODING", "PYTHON_CODING", "SCENARIO_CODING"}:
-                q_type = "SCENARIO"
+        # 1. Clean Scenario
+        clean_scenario = scen_raw
+        if not clean_scenario or len(clean_scenario) < 15:
+            if "### Scenario:" in prob_raw:
+                parts = prob_raw.split("---")
+                clean_scenario = parts[0].replace("### Scenario:", "").strip()
             else:
-                q_type = "MCQ"
-            q["type"] = q_type
+                clean_scenario = f"A real-world database analysis scenario evaluating {q.get('topic', 'SQL query logic')}."
+        
+        for p in ["Scenario:", "### Scenario:", "---"]:
+            clean_scenario = clean_scenario.replace(p, "").strip()
 
-            q["difficulty"] = str(q.get("difficulty", "Medium")).capitalize()
-            if q["difficulty"] not in {"Easy", "Medium", "Hard"}:
-                q["difficulty"] = "Medium"
+        # 2. Format Task section into clean table usage lines + bulleted requirements
+        raw_task_text = task_raw
+        if not raw_task_text or len(raw_task_text) < 15:
+            if "### Task:" in prob_raw:
+                parts = prob_raw.split("---")
+                if len(parts) >= 2:
+                    raw_task_text = parts[1].replace("### Task:", "").strip()
 
-            # 3. Clean MCQ questions
-            if q_type == "MCQ":
-                q["question"] = str(q.get("question") or q.get("candidateTask") or f"Identify the correct option regarding {q['subject']} - {q['topic']}.").strip()
-                raw_options = q.get("options") or []
-                correct_ans = str(q.get("correctAnswer", "")).strip()
+        # Split raw task into sentences or lines
+        raw_lines = [l.strip() for l in raw_task_text.replace("\r", "").split("\n") if l.strip()]
+        if len(raw_lines) == 1 and "." in raw_lines[0]:
+            raw_lines = [s.strip() + "." for s in raw_lines[0].split(".") if s.strip()]
 
-                cleaned_opts = []
-                for opt in raw_options:
-                    opt_str = str(opt).strip()
-                    opt_lower = opt_str.lower()
-                    if any(phrase in opt_lower for phrase in banned_phrases):
-                        opt_str = f"Invalid {q.get('topic', 'concept')} configuration"
-                    cleaned_opts.append(opt_str)
+        table_lines = []
+        requirement_bullets = []
 
-                # Ensure exactly 4 options
-                while len(cleaned_opts) < 4:
-                    cleaned_opts.append(f"Option {chr(65 + len(cleaned_opts))}")
-                if len(cleaned_opts) > 4:
-                    if correct_ans in cleaned_opts[:4]:
-                        cleaned_opts = cleaned_opts[:4]
-                    else:
-                        cleaned_opts = cleaned_opts[:3] + [correct_ans]
+        schemas = ["HumanResources", "Sales", "Production", "Purchasing", "Person", "dbo"]
 
-                # Match correct_ans exact string
-                exact_match = None
-                for opt in cleaned_opts:
-                    if opt.strip().lower() == correct_ans.lower():
-                        exact_match = opt
-                        break
-                if exact_match:
-                    q["correctAnswer"] = exact_match
+        for s in raw_lines:
+            s_clean = s.strip()
+            if not s_clean or any(h in s_clean for h in ["###", "Scenario:", "Task:", "Input/Output", "---"]):
+                continue
+
+            has_table = any(f"{schema}." in s_clean for schema in schemas) or re.search(r'\b[A-Z][a-zA-Z0-9_]+\.[A-Z][a-zA-Z0-9_]+\b', s_clean)
+            
+            if has_table:
+                # Bold table names e.g. Production.Product -> **Production.Product**
+                table_formatted = re.sub(r'(?<!\*\*)(\b[A-Z][a-zA-Z0-9_]+\.[A-Z][a-zA-Z0-9_]+\b)(?!\*\*)', r'**\1**', s_clean)
+                
+                # Ensure starts with "Use " if not starting with action verb or bullet
+                if not any(table_formatted.startswith(prefix) for prefix in ["Use ", "Query ", "Select ", "From ", "Join ", "- ", "* "]):
+                    table_formatted = f"Use {table_formatted}"
+                
+                table_lines.append(table_formatted)
+            else:
+                if s_clean.startswith("- ") or s_clean.startswith("* "):
+                    requirement_bullets.append(s_clean if s_clean.startswith("- ") else f"- {s_clean[2:]}")
                 else:
-                    q["correctAnswer"] = cleaned_opts[0]
+                    requirement_bullets.append(f"- {s_clean.rstrip('.')}.")
 
-                q["options"] = cleaned_opts
-                if not q.get("explanation"):
-                    q["explanation"] = f"The correct answer is '{q['correctAnswer']}', which accurately solves the {q['subject']} ({q['topic']}) task."
+        final_task_parts = []
+        if table_lines:
+            final_task_parts.extend(table_lines)
+            final_task_parts.append("")  # Empty line separator
+
+        if requirement_bullets:
+            final_task_parts.extend(requirement_bullets)
+        else:
+            final_task_parts.append(f"- Query the specified database tables and return the required columns.")
+
+        clean_task = "\n".join(final_task_parts).strip()
+
+        # 3. Extract output columns from expected query for bulleted Input/Output Format
+        output_cols = []
+        if expected_query:
+            m = re.search(r'SELECT\s+(?:TOP\s+\d+\s+)?(.*?)\s+FROM', expected_query, re.IGNORECASE | re.DOTALL)
+            if m:
+                col_exprs = m.group(1).split(",")
+                for expr in col_exprs:
+                    expr_clean = expr.strip()
+                    if " AS " in expr_clean.upper():
+                        alias = re.split(r'\s+AS\s+', expr_clean, flags=re.IGNORECASE)[-1].strip()
+                        alias_clean = alias.replace("[", "").replace("]", "").strip()
+                        if alias_clean:
+                            output_cols.append(alias_clean)
+                    else:
+                        parts = expr_clean.split(".")
+                        col_name = parts[-1].split()[-1].replace("[", "").replace("]", "").strip()
+                        if col_name and not col_name.upper().startswith("TOP"):
+                            output_cols.append(col_name)
+
+        if not output_cols:
+            output_cols = ["Column1", "Column2", "Column3"]
+
+        bulleted_cols = "\n".join([f"- {col}" for col in output_cols])
+        clean_io_fmt = (
+            f"Query the live database and return these columns:\n\n"
+            f"{bulleted_cols}"
+        )
+
+        # 4. Standardized Problem Statement
+        prob_stmt = (
+            f"### Scenario:\n"
+            f"{clean_scenario}\n\n"
+            f"---\n\n"
+            f"### Task:\n"
+            f"{clean_task}\n\n"
+            f"---\n\n"
+            f"### Input/Output Format:\n"
+            f"{clean_io_fmt}"
+        )
+
+        # Strip unrequested TOP/LIMIT clauses from expected query if task does not explicitly ask for row limits
+        task_scen_combined = f"{clean_scenario} {clean_task}".lower()
+        explicit_limit_keywords = [
+            "top 5", "top 10", "top 3", "top 20", "top ",
+            "limit 5", "limit 10", "limit 3", "limit 20", "limit ",
+            "first 5", "first 10", "first 3", "first 20",
+            "highest 5", "highest 10", "lowest 5", "lowest 10",
+            "only 5", "only 10", "only 3"
+        ]
+        asks_for_limit = any(k in task_scen_combined for k in explicit_limit_keywords)
+        if expected_query and not asks_for_limit:
+            expected_query = re.sub(r'SELECT\s+TOP\s*\(?\s*\d+\s*\)?\s+', 'SELECT ', expected_query, flags=re.IGNORECASE)
+            expected_query = re.sub(r'\s+LIMIT\s+\d+\s*;?$', ';', expected_query, flags=re.IGNORECASE)
+            expected_query = re.sub(r'\s+FETCH\s+(?:FIRST|NEXT)\s+\d+\s+ROWS?\s+ONLY\s*;?$', ';', expected_query, flags=re.IGNORECASE)
+            q["expectedAnswer"] = expected_query
+            q["correctAnswer"] = expected_query
+
+        q["scenario"] = clean_scenario
+        q["task"] = clean_task
+        q["candidateTask"] = clean_task
+        q["inputOutputFormat"] = clean_io_fmt
+        q["problemStatement"] = prob_stmt
+        q["question"] = prob_stmt
+
+        return q
 
     def _normalize_and_validate_python_question(self, q: dict) -> dict:
         """
         Validates and normalizes Python scenario questions to enforce 100% consistency
         between problem statement, function signature, parameter naming, input format,
-        sample input, starter code, and visible test cases (Rules 1 - 7).
+        sample input, starter code, and visible test cases.
+        Dynamically preserves AI-generated parameter names and signatures.
         """
         topic_lower = str(q.get("topic", "")).lower()
         title_lower = str(q.get("title", "")).lower()
-        scen_raw = str(q.get("scenario") or q.get("problemStatement") or q.get("question") or "").strip()
-        q_full_text = f"{title_lower} {topic_lower} {scen_raw}".lower()
+        scen_raw = str(q.get("scenario") or "").strip()
+        task_raw = str(q.get("task") or q.get("candidateTask") or "").strip()
+        prob_raw = str(q.get("problemStatement") or q.get("question") or "").strip()
+        q_full_text = f"{title_lower} {topic_lower} {scen_raw} {task_raw} {prob_raw}".lower()
 
         # Extract raw sample input & output
         vtc_dict = q.get("visibleTestCase")
@@ -325,145 +734,139 @@ RESPONSE SCHEMA (RETURN RAW CLEAN JSON ONLY):
         raw_in = str(vtc_dict.get("input") or q.get("sampleInput") or q.get("exampleInput") or "").strip()
         raw_out = str(vtc_dict.get("expectedOutput") if vtc_dict.get("expectedOutput") is not None else (vtc_dict.get("output") or q.get("sampleOutput") or q.get("exampleOutput") or "")).strip()
 
-        # 1. Determine logical parameter name & data type based on problem requirements (Rules 1, 5, 6)
-        param_name = "numbers"
-        param_type_desc = "numbers: List[int]"
-        is_list = False
-        is_matrix = False
-        is_string = False
-        is_multi = False
-        multi_params = []
-        multi_types = []
+        # 1. Dynamically extract function name and parameter names from AI generated output
+        extracted_func_name = None
+        extracted_params = []
 
-        if any(w in q_full_text for w in ["parcel weight", "package weight", "parcel", "weight"]):
-            param_name = "weights"
-            param_type_desc = "weights: List[int]"
-            is_list = True
-        elif any(w in q_full_text for w in ["price", "revenue", "sales", "store", "bookstore"]):
-            if "tax" in q_full_text:
-                is_multi = True
-                multi_params = ["price", "tax"]
-                multi_types = ["price: float", "tax: float"]
+        banned_kws = {"function", "python", "def", "write", "takes", "returns", "given", "that", "and", "a", "an", "the", "self", "pass", "solution", "solve", "process", "main"}
+
+        sources = [
+            task_raw,
+            prob_raw,
+            str(q.get("functionSignature") or ""),
+            str(q.get("starterCode") or q.get("starter_code") or "")
+        ]
+
+        for src in sources:
+            if not src:
+                continue
+            
+            # Match `def func_name(param1, param2)`
+            match = re.search(r"def\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*\((.*?)\)", src)
+            if not match:
+                match = re.search(r"function\s+`?([a-zA-Z_][a-zA-Z0-9_]*)`?\s*\((.*?)\)", src, re.IGNORECASE)
+            if not match:
+                match = re.search(r"`([a-zA-Z_][a-zA-Z0-9_]*)\s*\((.*?)\)`", src)
+            if not match:
+                match = re.search(r"\b([a-zA-Z_][a-zA-Z0-9_]*)\s*\(([a-zA-Z0-9_,\s]*)\)", src)
+
+            if match:
+                fn = match.group(1).strip()
+                # Keep AI's exact function name if specified in Task
+                if fn.isidentifier() and fn.lower() not in {"function", "python", "def", "write", "takes", "returns", "given", "that", "and", "a", "an", "the", "self", "pass"}:
+                    extracted_func_name = fn
+
+                raw_p = match.group(2).strip()
+                if raw_p:
+                    params_list = [p.strip().split(":")[0].strip().split("=")[0].strip() for p in raw_p.split(",") if p.strip()]
+                    clean_p = [p for p in params_list if p and p != "self" and p.isidentifier() and p.lower() not in {"self", "pass"}]
+                    if clean_p:
+                        extracted_params = clean_p
+                
+                if extracted_func_name and extracted_params:
+                    break
+
+        # Fallbacks if function name or params were not explicitly provided
+        if not extracted_func_name:
+            raw_topic = str(q.get("topic") or q.get("title") or "").lower()
+            clean_words = [w for w in re.sub(r"[^a-zA-Z0-9_\s]", "", raw_topic).split() if w not in banned_kws and len(w) > 2]
+            if clean_words:
+                extracted_func_name = "_".join(clean_words[:3])
+                if not extracted_func_name.isidentifier():
+                    extracted_func_name = f"func_{extracted_func_name}"
             else:
-                param_name = "prices"
-                param_type_desc = "prices: List[int]"
-                is_list = True
-        elif any(w in q_full_text for w in ["mark", "score", "student"]):
-            param_name = "marks"
-            param_type_desc = "marks: List[int]"
-            is_list = True
-        elif any(w in q_full_text for w in ["temperature", "weather"]):
-            param_name = "temperatures"
-            param_type_desc = "temperatures: List[int]"
-            is_list = True
-        elif any(w in q_full_text for w in ["employee", "salary"]):
-            param_name = "employees"
-            param_type_desc = "employees: List[int]"
-            is_list = True
-        elif any(w in q_full_text for w in ["vowel", "palindrome", "reverse string", "uppercase", "lowercase", "word", "sentence", "text", "string"]):
-            if "merge string" in q_full_text or "two string" in q_full_text:
-                is_multi = True
-                multi_params = ["str1", "str2"]
-                multi_types = ["str1: str", "str2: str"]
+                extracted_func_name = "solution"
+
+        if not extracted_params:
+            if any(w in q_full_text for w in ["weight", "parcel"]):
+                extracted_params = ["weights"]
+            elif any(w in q_full_text for w in ["price", "cart", "cost"]):
+                extracted_params = ["prices"]
+            elif any(w in q_full_text for w in ["score", "mark", "student"]):
+                extracted_params = ["scores"]
+            elif any(w in q_full_text for w in ["temp", "weather"]):
+                extracted_params = ["temperatures"]
+            elif any(w in q_full_text for w in ["text", "string", "word"]):
+                extracted_params = ["text"]
+            elif "matrix" in q_full_text or "grid" in q_full_text:
+                extracted_params = ["matrix"]
             else:
-                param_name = "text"
-                param_type_desc = "text: str"
-                is_string = True
-        elif any(w in q_full_text for w in ["matrix", "2d", "grid", "diagonal"]):
-            param_name = "matrix"
-            param_type_desc = "matrix: List[List[int]]"
-            is_matrix = True
-        elif "recharge" in q_full_text and "fee" in q_full_text:
-            is_multi = True
-            multi_params = ["recharge_amount", "service_fee"]
-            multi_types = ["recharge_amount: float", "service_fee: float"]
-        else:
-            param_name = "numbers"
-            param_type_desc = "numbers: List[int]"
-            is_list = True
+                extracted_params = ["numbers"]
 
-        # 2. Build exact function signature string (Rule 1 & Rule 6)
-        if is_multi:
-            func_sig = f"def solution({', '.join(multi_params)}):"
-            input_fmt_str = "\n".join(multi_types)
-        else:
-            func_sig = f"def solution({param_name}):"
-            input_fmt_str = param_type_desc
+        func_sig = f"def {extracted_func_name}({', '.join(extracted_params)}):"
+        starter_code = f"{func_sig}\n    pass"
 
-        # 3. Clean and convert raw console input to match Python parameter data structure (Rule 2, 4, 7)
-        clean_sample_in = raw_in
-        if is_list:
-            lines = [l.strip() for l in raw_in.splitlines() if l.strip()]
-            if len(lines) >= 2 and lines[0].lstrip('-').isdigit() and not lines[1].startswith('['):
-                elements = []
-                for line in lines[1:]:
-                    elements.extend([x.strip(',') for x in line.split() if x.strip(',')])
-                clean_sample_in = "[" + ", ".join(elements) + "]"
-            elif len(lines) == 1 and not raw_in.startswith('['):
-                tokens = [x.strip(',') for x in raw_in.replace(',', ' ').split() if x.strip(',')]
-                if len(tokens) > 0:
-                    clean_sample_in = "[" + ", ".join(tokens) + "]"
-            elif not clean_sample_in or any(b in clean_sample_in.lower() for b in ["no input", "placeholder", "tbd"]):
-                clean_sample_in = "[12, 18, 9, 25, 17]" if param_name == "weights" else ("[120, 80, 50]" if param_name == "prices" else "[10, 20, 30]")
-        elif is_string:
-            if not clean_sample_in or clean_sample_in.startswith("[") or any(b in clean_sample_in.lower() for b in ["no input", "placeholder", "tbd"]):
-                clean_sample_in = '"hello"'
-            elif not clean_sample_in.startswith('"') and not clean_sample_in.startswith("'"):
-                clean_sample_in = f'"{clean_sample_in}"'
-        elif is_matrix:
-            if not clean_sample_in.startswith("["):
-                clean_sample_in = "[[1, 2], [3, 4]]"
-
-        if not raw_out or any(b in raw_out.lower() for b in ["no output", "placeholder", "tbd"]):
-            raw_out = "25" if is_list else ("True" if is_string else "100")
-
-        # Derive exact, explicit Output Format return type (banning vague/generic statements)
-        output_fmt_str = self._infer_explicit_output_format(q_full_text, raw_out)
-
-        # 4. Construct formatted question text
-        clean_scenario = scen_raw
-        for p in ["Scenario:", "Task:", "Input Format:", "Output Format:", "Example:", "Input:", "Output:"]:
+        clean_scenario = scen_raw if len(scen_raw) >= 15 else (prob_raw[:200] if len(prob_raw) >= 15 else f"A real-world operational scenario evaluating {q.get('topic', 'Python logic')}.")
+        for p in ["Scenario:", "Task:", "Input Format:", "Output Format:", "Input/Output Format:", "Example:", "Input:", "Output:"]:
             clean_scenario = re.sub(rf'^{p}\s*', '', clean_scenario, flags=re.IGNORECASE).strip()
 
-        formatted_q = (
-            f"Scenario:\n"
-            f"{clean_scenario}\n\n"
-            f"Task:\n"
-            f"Write a Python function:\n\n"
-            f"{func_sig}\n\n"
-            f"that takes the specified inputs and returns the expected result.\n\n"
-            f"Input Format:\n"
-            f"{input_fmt_str}\n\n"
-            f"Output Format:\n"
-            f"{output_fmt_str}\n\n"
-            f"Example:\n\n"
-            f"Input:\n"
-            f"{clean_sample_in}\n\n"
-            f"Output:\n"
-            f"{raw_out}"
-        )
+        # Format Task to guarantee explicit mention of the exact function name and parameters
+        if task_raw:
+            clean_task = task_raw
+            if extracted_func_name not in clean_task:
+                clean_task = f"Write a Python function `{extracted_func_name}({', '.join(extracted_params)})` that takes {', '.join(extracted_params)} and returns the calculated result.\n\n{task_raw}"
+        else:
+            clean_task = f"Write a Python function `{extracted_func_name}({', '.join(extracted_params)})` to process the input parameters and return the expected output."
 
-        starter_code = f"{func_sig}\n    pass"
+        in_fmt = str(q.get("inputFormat") or q.get("inputOutputFormat") or "").strip()
+        if not in_fmt:
+            in_fmt = f"Input parameters: {', '.join(extracted_params)}"
+
+        out_fmt = str(q.get("outputFormat") or "").strip()
+        if not out_fmt:
+            out_fmt = self._infer_explicit_output_format(q_full_text, raw_out)
+
+        if not raw_in or any(b in raw_in.lower() for b in ["placeholder", "tbd", "no input"]):
+            raw_in = "[10, 20, 30]" if len(extracted_params) == 1 else "10, 20"
+
+        io_fmt_str = f"Input is {in_fmt}. Output is {out_fmt}." if "input is" not in in_fmt.lower() else in_fmt
+
+        formatted_q = (
+            f"### Scenario:\n"
+            f"{clean_scenario}\n\n"
+            f"---\n\n"
+            f"### Task:\n"
+            f"{clean_task}\n\n"
+            f"---\n\n"
+            f"### Input/Output Format:\n"
+            f"{io_fmt_str}\n\n"
+            f"---\n\n"
+            f"### Example:\n"
+            f"Input: {raw_in}\n\n"
+            f"Output: {raw_out}"
+        )
 
         q["functionSignature"] = func_sig
         q["starterCode"] = starter_code
         q["starter_code"] = starter_code
-        q["inputFormat"] = input_fmt_str
-        q["outputFormat"] = output_fmt_str
+        q["inputFormat"] = in_fmt
+        q["outputFormat"] = out_fmt
         q["scenario"] = clean_scenario
+        q["task"] = clean_task
+        q["candidateTask"] = clean_task
         q["problemStatement"] = formatted_q
         q["question"] = formatted_q
-        q["sampleInput"] = clean_sample_in
+        q["sampleInput"] = raw_in
         q["sampleOutput"] = raw_out
-        q["exampleInput"] = clean_sample_in
+        q["exampleInput"] = raw_in
         q["exampleOutput"] = raw_out
 
-        visible_tc = {"input": clean_sample_in, "expectedOutput": raw_out, "output": raw_out}
+        visible_tc = {"input": raw_in, "expectedOutput": raw_out, "output": raw_out}
         q["visibleTestCase"] = visible_tc
         q["visibleTestCases"] = [visible_tc]
         q["hiddenTestCases"] = []
         q["testCases"] = {
-            "visible": [{"input": clean_sample_in, "output": raw_out}],
+            "visible": [{"input": raw_in, "output": raw_out}],
             "hidden": []
         }
 
@@ -648,7 +1051,8 @@ RESPONSE SCHEMA (RETURN RAW CLEAN JSON ONLY):
     def _clean_and_validate_questions(
         self, 
         questions: List[Dict[str, Any]], 
-        target_subjects: List[str]
+        target_subjects: List[str],
+        existing_questions: Optional[List[str]] = None
     ) -> List[Dict[str, Any]]:
         """
         Post-processes generated questions to guarantee non-empty inputs/outputs,
@@ -768,6 +1172,8 @@ RESPONSE SCHEMA (RETURN RAW CLEAN JSON ONLY):
                     q["visibleTestCases"] = None
                     q["hiddenTestCases"] = None
 
+                elif q["subject"].upper() == "SQL":
+                    q = self._normalize_and_validate_sql_question(q)
                 elif q["subject"].upper() == "PYTHON":
                     q = self._normalize_and_validate_python_question(q)
                 else:
@@ -840,18 +1246,30 @@ RESPONSE SCHEMA (RETURN RAW CLEAN JSON ONLY):
                     tables_map = live_schema.get("tables_map", {})
 
                     if not q.get("databaseSchema") or any("evaluation_records" in str(s).lower() for s in q.get("databaseSchema", [])):
-                        emp_info = tables_map.get("HumanResources.Employee")
-                        if emp_info and "columns" in emp_info:
-                            cols = ", ".join([f"{c['name']} {c['type']}{' PRIMARY KEY' if c.get('is_pk') else ''}" for c in emp_info["columns"][:15]])
-                            q["databaseSchema"] = [f"-- Live Schema from AdventureWorks Database\nCREATE TABLE HumanResources.Employee ({cols});"]
+                        target_t = list(tables_map.keys())[0] if tables_map else "Production.Product"
+                        target_meta = tables_map.get(target_t, {})
+                        if target_meta and "columns" in target_meta:
+                            cols = ", ".join([f"{c['name']} {c['type']}{' PRIMARY KEY' if c.get('is_pk') else ''}" for c in target_meta["columns"][:15]])
+                            q["databaseSchema"] = [f"-- Live Schema from AdventureWorks Database\nCREATE TABLE {target_t} ({cols});"]
                         else:
-                            q["databaseSchema"] = [
-                                "-- Live Schema from AdventureWorks Database\n"
-                                "CREATE TABLE HumanResources.Employee (BusinessEntityID INT PRIMARY KEY, NationalIDNumber NVARCHAR, JobTitle NVARCHAR, HireDate DATE, MaritalStatus NCHAR, Gender NCHAR);"
-                            ]
+                            q["databaseSchema"] = [f"-- Live Schema from AdventureWorks Database\nCREATE TABLE {target_t};"]
 
-                    if not q.get("sampleData") or any("evaluation_records" in str(s).lower() or "sample record" in str(s).lower() for s in q.get("sampleData", [])):
-                        q["sampleData"] = ["-- Sample data is dynamically queried directly from the connected AdventureWorks database."]
+                # Final strict validation and similarity check for Python and SQL scenario questions
+                if q["type"] == "SCENARIO":
+                    if q["subject"].upper() == "PYTHON":
+                        if not validate_python_question(q):
+                            logger.warning(f"[AzureOpenAIService] Discarding invalid Python question '{q.get('topic')}'.")
+                            continue
+                        if is_duplicate_or_similar(q, existing_questions, cleaned_questions):
+                            logger.warning(f"[AzureOpenAIService] Discarding duplicate/similar Python question '{q.get('topic')}'.")
+                            continue
+                    elif q["subject"].upper() == "SQL":
+                        if not validate_sql_question(q):
+                            logger.warning(f"[AzureOpenAIService] Discarding invalid SQL question '{q.get('topic')}'.")
+                            continue
+                        if is_duplicate_or_similar(q, existing_questions, cleaned_questions):
+                            logger.warning(f"[AzureOpenAIService] Discarding duplicate/similar SQL question '{q.get('topic')}'.")
+                            continue
 
             cleaned_questions.append(q)
 

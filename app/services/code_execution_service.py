@@ -132,7 +132,7 @@ class CodeExecutionService:
         runner_wrapper = """
 
 if __name__ == "__main__":
-    import sys, json, inspect
+    import sys, json, inspect, ast
 
     _raw_stdin = sys.stdin.read()
 
@@ -142,94 +142,90 @@ if __name__ == "__main__":
         
         raw_input_str = raw_input_str.strip() if raw_input_str else ""
         if not raw_input_str:
-            return []
+            return [None] * len(params_list)
 
-        lines = [line.strip() for line in raw_input_str.splitlines() if line.strip()]
+        def _smart_eval_single(val_str):
+            s = val_str.strip() if isinstance(val_str, str) else str(val_str or "").strip()
+            if not s:
+                return ""
+            try:
+                return json.loads(s)
+            except Exception:
+                pass
+            try:
+                return ast.literal_eval(s)
+            except Exception:
+                pass
+            if s.lstrip('-').isdigit():
+                return int(s)
+            try:
+                return float(s)
+            except ValueError:
+                pass
+            if s.lower() == 'true':
+                return True
+            if s.lower() == 'false':
+                return False
+            if s.lower() in ('none', 'null'):
+                return None
 
+            # Check for space or comma separated numeric list
+            parts = [p.strip() for p in s.replace(',', ' ').split() if p.strip()]
+            if len(parts) > 1:
+                num_parts = []
+                all_nums = True
+                for p in parts:
+                    if p.lstrip('-').isdigit():
+                        num_parts.append(int(p))
+                    elif p.replace('.','',1).lstrip('-').isdigit():
+                        num_parts.append(float(p))
+                    else:
+                        all_nums = False
+                        break
+                if all_nums:
+                    return num_parts
+
+            return s
+
+        # 1. Try evaluating raw_input_str as a single complete literal expression
         try:
-            val = json.loads(raw_input_str)
+            parsed_full = _smart_eval_single(raw_input_str)
             if len(params_list) == 1:
-                return [val]
-            elif isinstance(val, list) and len(val) == len(params_list):
-                return val
+                return [parsed_full]
+            elif isinstance(parsed_full, (list, tuple)) and len(parsed_full) == len(params_list):
+                return list(parsed_full)
         except Exception:
             pass
 
+        lines = [line.strip() for line in raw_input_str.splitlines() if line.strip()]
+
+        # 2. Multi-parameter line-by-line matching
+        if len(params_list) > 1 and len(lines) >= len(params_list):
+            return [_smart_eval_single(l) for l in lines[:len(params_list)]]
+
+        # 3. Multi-parameter token matching (space/comma separated)
+        if len(params_list) > 1:
+            tokens = [t.strip() for t in raw_input_str.replace(',', ' ').split() if t.strip()]
+            if len(tokens) >= len(params_list):
+                return [_smart_eval_single(t) for t in tokens[:len(params_list)]]
+
+        # 4. Single parameter matching multi-line or token-separated input
         if len(params_list) == 1:
-            p_name = params_list[0].lower()
-            if 'matrix' in p_name or 'grid' in p_name or (len(lines) > 1 and lines[0].isdigit()):
-                if lines and lines[0].isdigit():
-                    num_rows = int(lines[0])
-                    matrix = []
-                    for line in lines[1:1+num_rows]:
-                        row = [int(x) if x.lstrip('-').isdigit() else (float(x) if x.replace('.','',1).lstrip('-').isdigit() else x) for x in line.split()]
-                        matrix.append(row)
-                    return [matrix]
-            if any(w in p_name for w in ['list', 'numbers', 'arr', 'nums', 'lst', 'items', 'vector', 'elements']):
-                tokens = raw_input_str.split()
-                parsed_list = []
-                for tok in tokens:
-                    if tok.lstrip('-').isdigit():
-                        parsed_list.append(int(tok))
-                    elif tok.replace('.','',1).lstrip('-').isdigit():
-                        parsed_list.append(float(tok))
-                    else:
-                        parsed_list.append(tok)
-                return [parsed_list]
-            if any(w in p_name for w in ['number', 'num', 'count', 'k', 'n', 'x', 'y', 'val', 'int']):
-                if raw_input_str.lstrip('-').isdigit():
-                    return [int(raw_input_str)]
-                elif raw_input_str.replace('.','',1).lstrip('-').isdigit():
-                    return [float(raw_input_str)]
-            return [raw_input_str]
+            if len(lines) > 1:
+                return [[_smart_eval_single(l) for l in lines]]
+            tokens = [t.strip() for t in raw_input_str.replace(',', ' ').split() if t.strip()]
+            if len(tokens) > 1:
+                eval_tokens = [_smart_eval_single(t) for t in tokens]
+                if any(isinstance(t, (int, float)) for t in eval_tokens):
+                    return [eval_tokens]
 
-        # Multi-parameter parsing
-        if len(lines) >= len(params_list):
-            parsed_args = []
-            for idx, line in enumerate(lines[:len(params_list)]):
-                try:
-                    val = json.loads(line)
-                    parsed_args.append(val)
-                    continue
-                except Exception:
-                    pass
-                toks = line.split()
-                if len(toks) > 1:
-                    row = [int(x) if x.lstrip('-').isdigit() else (float(x) if x.replace('.','',1).lstrip('-').isdigit() else x) for x in toks]
-                    parsed_args.append(row)
-                elif len(toks) == 1:
-                    tok = toks[0]
-                    if tok.lstrip('-').isdigit():
-                        parsed_args.append(int(tok))
-                    elif tok.replace('.','',1).lstrip('-').isdigit():
-                        parsed_args.append(float(tok))
-                    else:
-                        parsed_args.append(tok)
-                else:
-                    parsed_args.append(line)
-            if len(parsed_args) == len(params_list):
-                return parsed_args
+        # 5. Fallback return single evaluated value
+        return [_smart_eval_single(raw_input_str)]
 
-        # Fallback space-separated token distribution across parameters
-        tokens = raw_input_str.split()
-        if len(tokens) >= len(params_list):
-            args = []
-            for tok in tokens[:len(params_list)]:
-                if tok.lstrip('-').isdigit():
-                    args.append(int(tok))
-                elif tok.replace('.','',1).lstrip('-').isdigit():
-                    args.append(float(tok))
-                else:
-                    args.append(tok)
-            return args
-
-        return [raw_input_str]
-
-    _target_func = globals().get('solution') or globals().get('solve')
-    if not _target_func:
-        _funcs = [v for k, v in list(globals().items()) if callable(v) and not k.startswith('_') and k not in ('sys', 'json', 're', 'inspect', '_parse_args_for_func')]
-        if _funcs:
-            _target_func = _funcs[-1]
+    _target_func = None
+    _funcs = [v for k, v in list(globals().items()) if callable(v) and not k.startswith('_') and k not in ('sys', 'json', 're', 'inspect', 'ast', '_parse_args_for_func')]
+    if _funcs:
+        _target_func = _funcs[-1]
 
     if _target_func:
         _sig = inspect.signature(_target_func)
@@ -360,6 +356,10 @@ if __name__ == "__main__":
 
             is_success = exec_res.get("status") == "Success"
             passed = is_success and (norm_actual == norm_expected)
+            if is_success and not passed and norm_actual and norm_expected:
+                stdout_lines = [l.strip() for l in stdout.strip().splitlines() if l.strip()]
+                if stdout_lines and normalize_output(stdout_lines[-1]) == norm_expected:
+                    passed = True
 
             logger.info(f"[TEST RUNNER] Raw Stdout: {repr(stdout)}")
             logger.info(f"[TEST RUNNER] Normalized Actual: {repr(norm_actual)}")

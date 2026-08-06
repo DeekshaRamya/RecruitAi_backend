@@ -11,9 +11,8 @@ def test_example_1_list_and_target():
         "sampleInput": "[205, 310, 205, 411, 205, 310]\n205"
     }
     code = generate_python_starter_code(q)
-    assert "def solution(numbers, target):" in code
-    assert "eval(_raw_numbers)" in code
-    assert "target = int(input().strip())" in code
+    assert "(numbers, target):" in code
+    assert "pass" in code
     assert "data" not in code
 
 def test_example_2_string_and_k():
@@ -23,9 +22,8 @@ def test_example_2_string_and_k():
         "sampleInput": "hello\n3"
     }
     code = generate_python_starter_code(q)
-    assert "def solution(text, k):" in code
-    assert "text = input().strip()" in code
-    assert "k = int(input().strip())" in code
+    assert "(text, k):" in code
+    assert "pass" in code
     assert "data" not in code
 
 def test_example_3_two_integers():
@@ -35,7 +33,8 @@ def test_example_3_two_integers():
         "sampleInput": "10\n20"
     }
     code = generate_python_starter_code(q)
-    assert "def solution(a, b):" in code
+    assert "(a, b):" in code
+    assert "pass" in code
     assert "data" not in code
 
 def test_example_4_matrix_and_target():
@@ -45,9 +44,8 @@ def test_example_4_matrix_and_target():
         "sampleInput": "[[1, 2], [3, 4]]\n3"
     }
     code = generate_python_starter_code(q)
-    assert "def solution(matrix, target):" in code
-    assert "matrix = eval(_raw_matrix)" in code
-    assert "target = int(input().strip())" in code
+    assert "(matrix, target):" in code
+    assert "pass" in code
     assert "data" not in code
 
 def test_example_5_three_arrays():
@@ -57,10 +55,8 @@ def test_example_5_three_arrays():
         "sampleInput": "[1, 2]\n[3, 4]\n[5, 6]"
     }
     code = generate_python_starter_code(q)
-    assert "def solution(arr1, arr2, arr3):" in code
-    assert "arr1 = eval(_raw_arr1)" in code
-    assert "arr2 = eval(_raw_arr2)" in code
-    assert "arr3 = eval(_raw_arr3)" in code
+    assert "(arr1, arr2, arr3):" in code
+    assert "pass" in code
     assert "data" not in code
 
 def test_execute_sample_test_cases():
@@ -69,7 +65,7 @@ def test_execute_sample_test_cases():
 
     candidate_code = """def solution(text):
     clean = text.lower()
-    print("YES" if clean == clean[::-1] else "NO")
+    return "YES" if clean == clean[::-1] else "NO"
 """
 
     visible_tcs = [
