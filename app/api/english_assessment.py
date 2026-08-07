@@ -416,22 +416,47 @@ async def complete_english_assessment(
 
     resume_text = _get_resume_text_context(current_user)
     logger.info(f"Completing English Interview for candidate {current_user.id}. Compiling report via Gemini...")
-    report = await gemini_service.generate_final_report(resume_text, convs_list, voice_used)
+    
+    try:
+        report = await gemini_service.generate_final_report(resume_text, convs_list, voice_used)
+    except Exception as e:
+        logger.exception("English Assessment report generation via Gemini failed.")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Gemini API call failed or rate limit exceeded: {str(e)}"
+        )
 
-    # Save score fields in interview record
-    interview.communication_score = report.get("communication_score", 80)
-    interview.grammar_score = report.get("grammar_score", 80)
-    interview.vocabulary_score = report.get("vocabulary_score", 80)
-    interview.confidence_score = report.get("confidence_score", 80)
-    interview.fluency_score = report.get("fluency_score", 80)
-    interview.professionalism_score = report.get("professionalism_score", 80)
-    interview.pronunciation_score = report.get("pronunciation_score", 80)
-    interview.overall_level = report.get("overall_level", "Good")
-    interview.interview_summary = report.get("summary", "")
-    interview.strengths = report.get("strengths", [])
-    interview.weaknesses = report.get("weaknesses", [])
-    interview.areas_for_improvement = report.get("areas_for_improvement", [])
-    interview.recommendation = report.get("recommendation", "Good")
+    def _scale_to_100(val) -> int:
+        if val is None:
+            return 80
+        try:
+            v = int(val)
+            return v * 10 if v <= 10 else v
+        except (ValueError, TypeError):
+            return 80
+
+    # Save score fields in interview record with type casting and safe default guards scaled to 100
+    interview.communication_score = _scale_to_100(report.get("communication_score"))
+    interview.grammar_score = _scale_to_100(report.get("grammar_score"))
+    interview.vocabulary_score = _scale_to_100(report.get("vocabulary_score"))
+    interview.confidence_score = _scale_to_100(report.get("confidence_score"))
+    interview.fluency_score = _scale_to_100(report.get("fluency_score"))
+    interview.professionalism_score = _scale_to_100(report.get("professionalism_score"))
+    interview.pronunciation_score = _scale_to_100(report.get("pronunciation_score"))
+    interview.overall_level = str(report.get("overall_level") if report.get("overall_level") is not None else "Good")
+    
+    summary_text = str(report.get("summary") if report.get("summary") is not None else "")
+    cefr = str(report.get("recommended_english_level") or "B2")
+    ss = _scale_to_100(report.get("sentence_structure_score"))
+    tc = _scale_to_100(report.get("technical_communication_score"))
+    lu = _scale_to_100(report.get("listening_understanding_score"))
+    rr = _scale_to_100(report.get("response_relevance_score"))
+    interview.interview_summary = f"{summary_text}\n\n[CEFR: {cefr}]\n[Sentence Structure: {ss}]\n[Technical Communication: {tc}]\n[Listening & Understanding: {lu}]\n[Response Relevance: {rr}]"
+    
+    interview.strengths = report.get("strengths") if isinstance(report.get("strengths"), list) else []
+    interview.weaknesses = report.get("weaknesses") if isinstance(report.get("weaknesses"), list) else []
+    interview.areas_for_improvement = report.get("areas_for_improvement") if isinstance(report.get("areas_for_improvement"), list) else []
+    interview.recommendation = str(report.get("recommendation") if report.get("recommendation") is not None else "Good")
 
     # Synchronize english score directly to candidate user table for dashboard compatibility
     current_user.english_score = interview.communication_score

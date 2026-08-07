@@ -47,6 +47,9 @@ class Settings(BaseModel):
     AZURE_OPENAI_DEPLOYMENT_NAME: str = Field(default_factory=lambda: os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME", ""))
     AZURE_OPENAI_API_VERSION: str = Field(default_factory=lambda: os.getenv("AZURE_OPENAI_API_VERSION", ""))
     GEMINI_API_KEY: str = Field(default_factory=lambda: os.getenv("GEMINI_API_KEY", ""))
+    GEMINI_MODEL: str = Field(default_factory=lambda: os.getenv("GEMINI_MODEL", "gemini-3.1-flash-live-preview"))
+    GEMINI_TEXT_MODEL: str = Field(default_factory=lambda: os.getenv("GEMINI_TEXT_MODEL", "gemini-3.1-flash-lite"))
+    GEMINI_VOICE: str = Field(default_factory=lambda: os.getenv("GEMINI_VOICE", "Puck"))
 
 
     # Python Execution API
