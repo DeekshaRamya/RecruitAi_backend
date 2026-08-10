@@ -291,18 +291,22 @@ def collect_all_test_cases(q: Dict[str, Any]) -> List[Dict[str, Any]]:
     return unique_tcs
 
 
-def evaluate_python_coding_submission(
+async def evaluate_python_coding_submission_async(
     cand_ans: str,
     q: Dict[str, Any],
     q_marks: float = 10.0,
-    code_executor = None
+    code_executor = None,
+    ai_service = None
 ) -> Dict[str, Any]:
     """
-    Evaluates candidate python coding submission strictly based on execution results.
+    Evaluates candidate Python coding submission using the 3-Stage Hybrid Evaluation Pipeline:
+      Stage 1: AST-Based Static Analysis (detects hardcoded values, ignored params, etc. without code execution).
+      Stage 2: Visible Test Case Execution (runs test cases if AST is NOT suspicious; Azure OpenAI is NOT called).
+      Stage 3: AI Verification (invoked ONLY if AST is suspicious to audit if code is hardcoded vs genuine).
     """
     starter_code = str(q.get("starterCode") or q.get("starter_code") or "").strip()
     func_sig = q.get("functionSignature") or q.get("function_signature") or "solution(data)"
-    
+
     logger.info("==================== SCORE ANALYSIS EVALUATION START ====================")
     logger.info(f"Target Question: {repr(q.get('question') or q.get('problemStatement'))}")
     logger.info(f"Generated Function Signature: {repr(func_sig)}")
@@ -327,62 +331,109 @@ def evaluate_python_coding_submission(
             "attempted": False
         }
 
+    # STAGE 1: AST-Based Static Analysis
+    from app.utils.python_ast_analyzer import analyze_python_ast
+    ast_res = analyze_python_ast(cand_ans, starter_code=starter_code, question=q)
+    is_suspicious = ast_res.get("suspicious", False)
+    ast_reasons = ast_res.get("reasons", [])
+    logger.info(f"[STAGE 1 - AST Analysis] suspicious={is_suspicious}, reasons={ast_reasons}")
+
+    # Collect test cases
     all_tcs = collect_all_test_cases(q)
     if not all_tcs:
         stc = get_sample_test_case(q)
         all_tcs = [{"input": stc["input"], "expectedOutput": stc["expectedOutput"], "isHidden": False}]
 
-    logger.info(f"Test Cases Collected ({len(all_tcs)} test cases):")
-    for idx, tc in enumerate(all_tcs):
-        logger.info(f"  Test Case #{idx+1}: Input={repr(tc['input'])}, ExpectedOutput={repr(tc['expectedOutput'])}")
-
     if code_executor is None:
         from app.services.code_execution_service import CodeExecutionService
         code_executor = CodeExecutionService()
 
+    # Execute test cases
     exec_res = code_executor.execute_test_cases(cand_ans, all_tcs)
     passed_tcs = exec_res.get("passedTestCases", 0)
     failed_tcs = exec_res.get("failedTestCases", 0)
     total_tcs = exec_res.get("totalTestCases", len(all_tcs))
     test_results = exec_res.get("testResults", [])
 
-    pass_ratio = (passed_tcs / total_tcs) if total_tcs > 0 else 0.0
-
     tr_fail = test_results[0] if test_results else {}
     actual_out = tr_fail.get("actualOutput", "")
     expected_out = tr_fail.get("expectedOutput", "")
     stderr_msg = tr_fail.get("stderr", "")
 
-    if passed_tcs == total_tcs and total_tcs > 0:
-        status = "PASSED"
-        is_correct = True
-        marks = q_marks
-        similarity = 100
-        fb = f"All {total_tcs} test cases passed successfully! Code output matched expected output."
-        strengths = "Passed all sample and target test cases."
-        missing_points = "None"
-        improvements = "None"
-    elif passed_tcs > 0:
-        status = "Partially Correct"
-        is_correct = None
-        marks = round(pass_ratio * q_marks, 2)
-        similarity = int(pass_ratio * 100)
-        fb = f"Passed {passed_tcs} out of {total_tcs} test cases."
-        strengths = f"Implemented solution logic passing {passed_tcs} test cases."
-        missing_points = f"Failed {failed_tcs} test cases."
-        improvements = "Review edge case handling and optimization."
-    else:
-        status = "FAILED"
-        is_correct = False
-        marks = 0.0
-        similarity = 0
-        if stderr_msg:
-            fb = f"Sample test case execution error: {stderr_msg}"
+    all_passed = (passed_tcs == total_tcs and total_tcs > 0)
+
+    # STAGE 2 / STAGE 3 DECISION
+    if not is_suspicious:
+        # STAGE 2: Normal Flow (NO Azure OpenAI Call)
+        logger.info("[STAGE 2 - Normal Flow] Code is AST clean. Evaluated purely via test case execution.")
+        if all_passed:
+            status = "PASSED"
+            is_correct = True
+            marks = q_marks
+            similarity = 100
+            fb = f"All {total_tcs} test cases passed successfully! Code output matched expected output."
+            strengths = "Passed all sample and target test cases."
+            missing_points = "None"
+            improvements = "None"
         else:
-            fb = f"Actual output '{actual_out}' did not match expected output '{expected_out}'."
-        strengths = "Submitted candidate logic."
-        missing_points = f"Actual output '{actual_out}' did not match expected output '{expected_out}'."
-        improvements = "Check logic and output formatting to match sample output."
+            status = "FAILED"
+            is_correct = False
+            marks = 0.0
+            similarity = 0
+            fb = f"Sample test case execution error: {stderr_msg}" if stderr_msg else f"Actual output '{actual_out}' did not match expected output '{expected_out}'."
+            strengths = "Submitted candidate logic."
+            missing_points = fb
+            improvements = "Check logic and output formatting to match sample output."
+
+    else:
+        # STAGE 3: AI Verification for Suspicious Submissions
+        logger.info("[STAGE 3 - AI Verification] Code flagged as suspicious by AST analyzer. Invoking Azure OpenAI verification...")
+        if ai_service is None:
+            from app.services.azure_openai_service import AzureOpenAIService
+            ai_service = AzureOpenAIService()
+
+        q_text = str(q.get("question") or q.get("problemStatement") or "").strip()
+
+        ai_audit = await ai_service.verify_python_code_hardcoding(
+            question_text=q_text,
+            function_signature=func_sig,
+            candidate_code=cand_ans,
+            test_cases=test_results,
+            ast_reasons=ast_reasons
+        )
+
+        is_hardcoded = ai_audit.get("hardcoded", True)
+        ai_reason = ai_audit.get("reason", "Submission flagged as hardcoded.")
+        logger.info(f"[STAGE 3 Audit Result] hardcoded={is_hardcoded}, confidence={ai_audit.get('confidence')}, reason='{ai_reason}'")
+
+        if is_hardcoded:
+            status = "FAILED"
+            is_correct = False
+            marks = 0.0
+            similarity = 0
+            fb = f"Submission Failed: Code detected as hardcoded to bypass test cases. Reason: {ai_reason}"
+            strengths = "Submitted response."
+            missing_points = f"Hardcoded implementation detected: {ai_reason}"
+            improvements = "Implement genuine algorithmic logic using function parameters instead of hardcoding expected outputs."
+        else:
+            if all_passed:
+                status = "PASSED"
+                is_correct = True
+                marks = q_marks
+                similarity = 100
+                fb = f"All {total_tcs} test cases passed successfully! Code verified as genuine by AI auditor."
+                strengths = "Passed all sample and target test cases with genuine algorithmic logic."
+                missing_points = "None"
+                improvements = "None"
+            else:
+                status = "FAILED"
+                is_correct = False
+                marks = 0.0
+                similarity = 0
+                fb = f"Sample test case execution error: {stderr_msg}" if stderr_msg else f"Actual output '{actual_out}' did not match expected output '{expected_out}'."
+                strengths = "Submitted candidate logic."
+                missing_points = fb
+                improvements = "Check logic and output formatting to match sample output."
 
     logger.info(f"Final Score Analysis Result: Status={status}, Marks={marks}/{q_marks}, Match={similarity}% ({passed_tcs}/{total_tcs} Passed)")
     logger.info("==================== SCORE ANALYSIS EVALUATION END ====================")
@@ -401,5 +452,35 @@ def evaluate_python_coding_submission(
         "failed_test_cases": failed_tcs,
         "total_test_cases": total_tcs,
         "test_results": test_results,
-        "attempted": True
+        "attempted": True,
+        "ast_analysis": ast_res
     }
+
+
+def evaluate_python_coding_submission(
+    cand_ans: str,
+    q: Dict[str, Any],
+    q_marks: float = 10.0,
+    code_executor = None,
+    ai_service = None
+) -> Dict[str, Any]:
+    """
+    Synchronous wrapper for evaluate_python_coding_submission_async.
+    """
+    import asyncio
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+
+    if loop and loop.is_running():
+        import nest_asyncio
+        nest_asyncio.apply()
+        return loop.run_until_complete(
+            evaluate_python_coding_submission_async(cand_ans, q, q_marks, code_executor, ai_service)
+        )
+    else:
+        return asyncio.run(
+            evaluate_python_coding_submission_async(cand_ans, q, q_marks, code_executor, ai_service)
+        )
+

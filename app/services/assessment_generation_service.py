@@ -67,13 +67,28 @@ class AssessmentGenerationService:
                         existing_questions=existing_questions
                     )
 
-                    # Generate remaining questions (MCQs & non-SQL questions) via Azure OpenAI
-                    ai_raw = await self.openai_service.generate_questions(request, existing_questions=existing_questions)
-                    # Filter out any AI-generated SQL Scenarios to guarantee SQL Scenarios come ONLY from 5001 API
-                    for q in ai_raw:
-                        if str(q.get("subject", "")).upper() == "SQL" and str(q.get("type", "")).upper() == "SCENARIO":
-                            continue
-                        questions_raw.append(q)
+                    # Calculate remaining questions needed from Azure OpenAI
+                    remaining_count = target_total - len(sql_scenarios)
+                    if remaining_count > 0:
+                        # Construct a modified request for Azure OpenAI so it generates only the remaining non-SQL-scenario questions
+                        remaining_request = request.model_copy(deep=True)
+                        remaining_request.totalQuestions = remaining_count
+
+                        # Adjust distribution: if SQL is the only subject, all remaining questions must be MCQs
+                        if num_subjects == 1 and "SQL" in [s.upper() for s in request.subjects]:
+                            remaining_request.questionDistribution.mcq = 100
+                            remaining_request.questionDistribution.scenario = 0
+
+                        ai_raw = await self.openai_service.generate_questions(
+                            remaining_request,
+                            existing_questions=existing_questions,
+                            exclude_sql_scenarios=True
+                        )
+                        # Filter out any AI-generated SQL Scenarios to guarantee SQL Scenarios come ONLY from 5001 API
+                        for q in ai_raw:
+                            if str(q.get("subject", "")).upper() == "SQL" and str(q.get("type", "")).upper() == "SCENARIO":
+                                continue
+                            questions_raw.append(q)
 
                     # Add the AdventureWorks SQL Scenarios from 5001 API
                     questions_raw.extend(sql_scenarios)
@@ -167,6 +182,10 @@ class AssessmentGenerationService:
         for q in questions:
             subject = str(q.get("subject", "")).upper()
             if subject == "SQL":
+                # Reuse existing metadata if question was already enriched/validated (e.g. from SqlScenarioService)
+                if q.get("is_enriched") or (q.get("databaseSchema") and q.get("sampleData") and q.get("expectedOutput")):
+                    logger.info(f"[SQL Validation] Reusing existing metadata for already verified SQL question '{q.get('topic')}'. Skipping duplicate DB execution.")
+                    continue
                 expected_query = q.get("expectedAnswer") or q.get("correctAnswer") or q.get("answer") or ""
                 logger.info(f"[SQL Validation] Evaluating AI generated SQL query against live AdventureWorks DB: {expected_query}")
 
@@ -183,45 +202,34 @@ class AssessmentGenerationService:
                     q["correctAnswer"] = dyn_query
                     expected_query = dyn_query
 
-                # Identify target schema and table name from verified query
-                target_table = None
-                for full_t_name in tables_map.keys():
-                    if full_t_name.lower() in expected_query.lower():
-                        target_table = full_t_name
-                        break
-                if not target_table:
-                    target_table = list(tables_map.keys())[0] if tables_map else "Production.Product"
+                # 1. Populate real Schema definition in DDL format for ALL referenced tables
+                from app.services.sql_schema_service import SqlSchemaService
+                q["databaseSchema"] = SqlSchemaService.get_database_schemas_for_question(q, tables_map)
 
-                # 1. Populate real Schema definition in DDL format for DatabaseSchemaVisualizer
-                table_meta = tables_map.get(target_table, {})
-                cols = table_meta.get("columns", [])
-                if cols:
-                    col_defs = ", ".join([f"{c['name']} {c['type']}{' PRIMARY KEY' if c.get('is_pk') else ''}" for c in cols])
-                    q["databaseSchema"] = [f"-- Live SQL Server Schema\nCREATE TABLE {target_table} ({col_defs});"]
-                else:
-                    q["databaseSchema"] = [f"-- Live SQL Server Schema\nCREATE TABLE {target_table};"]
+                ref_tables = SqlSchemaService.get_referenced_tables(q, tables_map)
 
-                # 2. Dynamically execute SELECT TOP 5 against SQL Server for Sample Data
-                logger.info(f"[SQL Validation] Retrieving real live sample data from SQL Server: SELECT TOP 5 * FROM {target_table}")
-                sample_res = executor.run_sql(query=f"SELECT TOP 5 * FROM {target_table};")
-                sample_lines = [f"-- Real data retrieved dynamically from connected SQL Server ({target_table})"]
-                if sample_res.get("status") == "Success" and sample_res.get("rows"):
-                    s_cols = sample_res.get("columns", [])
-                    for s_row in sample_res.get("rows", [])[:5]:
-                        vals = []
-                        for c in s_cols:
-                            val = s_row.get(c)
-                            if val is None:
-                                vals.append("NULL")
-                            elif isinstance(val, (int, float)):
-                                vals.append(str(val))
-                            else:
-                                clean_val = str(val).replace("'", "''")
-                                vals.append(f"'{clean_val}'")
-                        sample_lines.append(f"INSERT INTO {target_table} VALUES ({', '.join(vals)});")
-                    q["sampleData"] = sample_lines
-                else:
-                    q["sampleData"] = [f"-- Connected to table {target_table} on live AdventureWorks database."]
+                # 2. Dynamically execute SELECT TOP 5 against SQL Server for Sample Data across all referenced tables
+                sample_lines = []
+                for t_name in ref_tables:
+                    logger.info(f"[SQL Validation] Retrieving real live sample data from SQL Server: SELECT TOP 5 * FROM {t_name}")
+                    sample_res = executor.run_sql(query=f"SELECT TOP 5 * FROM {t_name};")
+                    if sample_res.get("status") == "Success" and sample_res.get("rows"):
+                        sample_lines.append(f"-- Real data retrieved dynamically from connected SQL Server ({t_name})")
+                        s_cols = sample_res.get("columns", [])
+                        for s_row in sample_res.get("rows", [])[:3]:
+                            vals = []
+                            for c in s_cols:
+                                val = s_row.get(c)
+                                if val is None:
+                                    vals.append("NULL")
+                                elif isinstance(val, (int, float)):
+                                    vals.append(str(val))
+                                else:
+                                    clean_val = str(val).replace("'", "''")
+                                    vals.append(f"'{clean_val}'")
+                            sample_lines.append(f"INSERT INTO {t_name} VALUES ({', '.join(vals)});")
+
+                q["sampleData"] = sample_lines if sample_lines else [f"-- Connected to tables: {', '.join(ref_tables)}"]
 
                 # 3. Automatically reference selected real table in editor placeholder
                 q["starterCode"] = "-- Write your SQL query here"
@@ -236,7 +244,7 @@ class AssessmentGenerationService:
                 q["sampleOutput"] = preview_markdown_table
                 q["expectedOutput"] = full_markdown_table
                 q["expectedRows"] = rows
-                logger.info(f"[SQL Validation] Question validation successful for {target_table}. Expected output row count: {len(rows)}")
+                logger.info(f"[SQL Validation] Question validation successful for tables ({', '.join(ref_tables)}). Expected output row count: {len(rows)}")
 
         return questions
 

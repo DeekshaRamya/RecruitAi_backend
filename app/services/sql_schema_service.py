@@ -1,5 +1,6 @@
 import logging
 import httpx
+import re
 from typing import Dict, Any, List, Optional
 from app.core.config import settings
 
@@ -13,8 +14,9 @@ class SqlSchemaService:
     @classmethod
     def get_live_schema(cls, force_refresh: bool = False) -> Dict[str, Any]:
         """
-        Dynamically discovers all available base schemas and tables from the connected
-        SQL Server database via INFORMATION_SCHEMA.TABLES. Caches metadata for the assessment session.
+        Dynamically discovers all available base schemas, tables, and column metadata from the connected
+        SQL Server database via INFORMATION_SCHEMA catalog views. Caches metadata for the assessment session.
+        No static or hardcoded table definitions are used.
         """
         if cls._cached_schema_info and not force_refresh:
             logger.info("[SqlSchemaService] Reusing cached SQL Server schema metadata for current session.")
@@ -29,7 +31,7 @@ class SqlSchemaService:
             "password": "Readonly@123"
         }
 
-        # Step 1: Execute exact dynamic table discovery query as the source of truth
+        # Step 1: Execute dynamic table discovery query directly against INFORMATION_SCHEMA
         discovery_query = """
 SELECT
     TABLE_SCHEMA,
@@ -67,21 +69,16 @@ ORDER BY TABLE_SCHEMA, TABLE_NAME;
                                     "table": t_name,
                                     "qualified_name": f"{s_name}.{t_name}"
                                 })
-                        logger.info(f"[SqlSchemaService] Dynamically discovered {len(discovered_tables)} base tables in AdventureWorks.")
+                        logger.info(f"[SqlSchemaService] Dynamically discovered {len(discovered_tables)} base tables from connected database.")
                 else:
                     logger.error(f"SQL Execution API discovery failed with status {res.status_code}: {res.text}")
                 
-                # If discovery failed or returned zero tables, check fallback or abort
                 if not discovered_tables:
-                    logger.warning("Dynamic discovery via API yielded zero tables. Attempting verified emergency recovery...")
-                    fallback_result = cls._get_fallback_schema()
-                    if not fallback_result.get("tables_map"):
-                        raise RuntimeError("SQL Server schema discovery failed: No available base tables found in connected database. Cannot generate valid SQL questions.")
-                    return fallback_result
+                    raise RuntimeError("SQL Server dynamic schema discovery failed: Unable to fetch live database tables.")
 
                 cls._session_discovered_tables = discovered_tables
 
-                # Step 2: Retrieve column details for all discovered base tables (No hardcoded schema filtering!)
+                # Step 2: Retrieve detailed column metadata dynamically for all discovered tables
                 columns_query = """
 SELECT 
     c.TABLE_SCHEMA, 
@@ -116,7 +113,6 @@ ORDER BY c.TABLE_SCHEMA, c.TABLE_NAME, c.ORDINAL_POSITION;
                     rows_cols = data_cols.get("rows", [])
                     
                     tables_map = {}
-                    # Initialize all discovered base tables first so none are missing
                     for dt in discovered_tables:
                         tables_map[dt["qualified_name"]] = {
                             "schema": dt["schema"],
@@ -129,6 +125,7 @@ ORDER BY c.TABLE_SCHEMA, c.TABLE_NAME, c.ORDINAL_POSITION;
                         t_name = row.get("TABLE_NAME")
                         col_name = row.get("COLUMN_NAME")
                         d_type = row.get("DATA_TYPE")
+                        is_nullable = row.get("IS_NULLABLE", "YES")
                         is_pk = bool(row.get("IS_PRIMARY_KEY", 0))
                         
                         full_table_name = f"{s_name}.{t_name}"
@@ -143,6 +140,7 @@ ORDER BY c.TABLE_SCHEMA, c.TABLE_NAME, c.ORDINAL_POSITION;
                             tables_map[full_table_name]["columns"].append({
                                 "name": col_name,
                                 "type": d_type,
+                                "is_nullable": is_nullable,
                                 "is_pk": is_pk
                             })
 
@@ -152,15 +150,16 @@ ORDER BY c.TABLE_SCHEMA, c.TABLE_NAME, c.ORDINAL_POSITION;
                         "discovered_base_tables": discovered_tables
                     }
                     cls._cached_schema_text = cls._format_schema_for_prompt(tables_map)
-                    logger.info(f"Successfully fetched and cached complete schema metadata for {len(tables_map)} base tables.")
+                    logger.info(f"Successfully fetched dynamic schema metadata for {len(tables_map)} database tables.")
                     return cls._cached_schema_info
                 else:
-                    logger.error(f"Column metadata retrieval failed with status {res_cols.status_code}")
-                    return cls._get_fallback_schema()
+                    raise RuntimeError(f"Column metadata retrieval failed with status {res_cols.status_code}")
 
         except Exception as ex:
             logger.error(f"Failed to perform dynamic schema discovery against SQL Execution API: {ex}")
-            return cls._get_fallback_schema()
+            if cls._cached_schema_info:
+                return cls._cached_schema_info
+            raise RuntimeError(f"SQL Server schema discovery failed: {ex}")
 
     @classmethod
     def get_live_schema_text(cls, force_refresh: bool = False) -> str:
@@ -172,14 +171,175 @@ ORDER BY c.TABLE_SCHEMA, c.TABLE_NAME, c.ORDINAL_POSITION;
         return cls._cached_schema_text or ""
 
     @classmethod
+    def extract_tables_from_sql(cls, sql_query: str, tables_map: Dict[str, Any]) -> List[str]:
+        """
+        Parses a SQL query to extract ONLY the database tables actually referenced in FROM, JOIN, INTO, UPDATE.
+        Cross-references extracted identifiers against tables_map to return qualified table names.
+        """
+        if not sql_query or not tables_map:
+            return []
+
+        # Clean SQL comments
+        clean_sql = re.sub(r'--.*?\n', ' ', sql_query)
+        clean_sql = re.sub(r'/\*.*?\*/', ' ', clean_sql, flags=re.DOTALL)
+
+        # Build case-insensitive lookup maps
+        qualified_map = {k.lower(): k for k in tables_map.keys()}
+        bare_map = {}
+        for full_name, details in tables_map.items():
+            b_name = details.get("table", full_name.split(".")[-1]).lower()
+            if b_name not in bare_map:
+                bare_map[b_name] = []
+            bare_map[b_name].append(full_name)
+
+        found_tables = []
+
+        def match_and_add(candidate: str):
+            clean_c = candidate.replace("[", "").replace("]", "").strip().rstrip(";").lower()
+            if not clean_c:
+                return
+            if clean_c in qualified_map:
+                full_t = qualified_map[clean_c]
+                if full_t not in found_tables:
+                    found_tables.append(full_t)
+            elif clean_c in bare_map:
+                for full_t in bare_map[clean_c]:
+                    if full_t not in found_tables:
+                        found_tables.append(full_t)
+
+        # 1. Match FROM, JOIN (INNER, LEFT, RIGHT, FULL, CROSS), INTO, UPDATE clauses
+        matches = re.findall(r'\b(?:FROM|JOIN|INTO|UPDATE)\s+([a-zA-Z0-9_.\-\[\]]+)', clean_sql, flags=re.IGNORECASE)
+        for m in matches:
+            match_and_add(m)
+
+        # 2. Match comma-separated FROM clauses (e.g., FROM TableA a, TableB b)
+        from_blocks = re.findall(r'\bFROM\s+(.*?)(?=\bWHERE\b|\bGROUP\b|\bHAVING\b|\bORDER\b|\bJOIN\b|;|$)', clean_sql, flags=re.IGNORECASE | re.DOTALL)
+        for block in from_blocks:
+            items = block.split(",")
+            for item in items:
+                tokens = item.strip().split()
+                if tokens:
+                    match_and_add(tokens[0])
+
+        return found_tables
+
+    @classmethod
+    def get_referenced_tables(cls, q_or_corpus: Any, tables_map: Optional[Dict[str, Any]] = None) -> List[str]:
+        """
+        Dynamically extracts ONLY the database tables that are actually referenced in the SQL question.
+        Primary source: The SQL query (expectedAnswer / correctAnswer).
+        Secondary source: Explicit qualified Schema.Table references in the question text.
+        Guarantees that NO extra or unrelated table schemas are included.
+        """
+        if not tables_map:
+            try:
+                schema_info = cls.get_live_schema()
+                tables_map = schema_info.get("tables_map", {}) if schema_info else {}
+            except Exception:
+                tables_map = {}
+
+        if not tables_map:
+            return []
+
+        sql_query = ""
+        corpus_text = ""
+
+        if isinstance(q_or_corpus, dict):
+            sql_query = str(q_or_corpus.get("expectedAnswer") or q_or_corpus.get("correctAnswer") or q_or_corpus.get("query") or "").strip()
+            corpus_text = " ".join([
+                sql_query,
+                str(q_or_corpus.get("problemStatement") or ""),
+                str(q_or_corpus.get("task") or q_or_corpus.get("candidateTask") or ""),
+                str(q_or_corpus.get("scenario") or ""),
+                str(q_or_corpus.get("question") or "")
+            ])
+        else:
+            corpus_text = str(q_or_corpus or "").strip()
+            if "SELECT" in corpus_text.upper():
+                sql_query = corpus_text
+
+        # Step 1: Parse SQL query directly (source of truth)
+        if sql_query:
+            query_tables = cls.extract_tables_from_sql(sql_query, tables_map)
+            if query_tables:
+                return query_tables
+
+        # Step 2: Fallback to parsing text corpus if SQL query was not provided
+        if corpus_text:
+            query_tables = cls.extract_tables_from_sql(corpus_text, tables_map)
+            if query_tables:
+                return query_tables
+
+            # Only match exact qualified Schema.Table names (e.g., HumanResources.Employee) present in corpus_text
+            qualified_map = {k.lower(): k for k in tables_map.keys()}
+            clean_corpus_lower = corpus_text.lower()
+            ref = []
+            for full_lower, full_original in qualified_map.items():
+                if full_lower in clean_corpus_lower:
+                    if full_original not in ref:
+                        ref.append(full_original)
+            if ref:
+                return ref
+
+        # Fallback to first table if zero tables detected
+        return [list(tables_map.keys())[0]]
+
+    @classmethod
+    def get_database_schemas_for_question(cls, q: Dict[str, Any], tables_map: Optional[Dict[str, Any]] = None) -> List[str]:
+        """
+        Generates complete DDL CREATE TABLE statements for ALL tables referenced in the question.
+        Constructs schema definitions dynamically from live database metadata (columns, types, nullability, PKs).
+        """
+        if not tables_map:
+            try:
+                schema_info = cls.get_live_schema()
+                tables_map = schema_info.get("tables_map", {}) if schema_info else {}
+            except Exception:
+                tables_map = {}
+
+        corpus_parts = [
+            str(q.get("expectedAnswer") or q.get("correctAnswer") or q.get("query") or ""),
+            str(q.get("problemStatement") or ""),
+            str(q.get("scenario") or ""),
+            str(q.get("task") or q.get("candidateTask") or ""),
+            str(q.get("question") or ""),
+            str(q.get("topic") or "")
+        ]
+        ref_tables = cls.get_referenced_tables(q, tables_map)
+
+        schemas = []
+        for t_name in ref_tables:
+            t_meta = tables_map.get(t_name, {})
+            cols = t_meta.get("columns", [])
+            if cols:
+                col_defs = []
+                for c in cols[:30]:
+                    name = c.get("name")
+                    c_type = c.get("type", "nvarchar")
+                    is_pk = c.get("is_pk", False)
+                    is_nullable = c.get("is_nullable", "YES")
+
+                    null_str = " NOT NULL" if (str(is_nullable).upper() == "NO" or is_pk) else ""
+                    pk_str = " PRIMARY KEY" if is_pk else ""
+
+                    col_defs.append(f"{name} {c_type}{null_str}{pk_str}")
+
+                cols_joined = ", ".join(col_defs)
+                schemas.append(f"-- Live Schema from Database ({t_name})\nCREATE TABLE {t_name} ({cols_joined});")
+            else:
+                schemas.append(f"-- Live Schema from Database ({t_name})\nCREATE TABLE {t_name};")
+
+        return schemas
+
+    @classmethod
     def _format_schema_for_prompt(cls, tables_map: Dict[str, Any]) -> str:
         lines = [
             "=================================================================================",
-            "MANDATORY DYNAMICALLY DISCOVERED DATABASE SCHEMA (ADVENTUREWORKS ON SQL SERVER):",
+            "MANDATORY DYNAMICALLY DISCOVERED DATABASE SCHEMA (LIVE DATABASE):",
             "CRITICAL MANDATE FOR ALL SQL QUESTIONS:",
             "- DO NOT invent tables or use generic/fake table names like 'evaluation_records', 'dbo.orders', 'users', 'customers', or 'employees'.",
-            "- YOU MUST EXPLICITLY INCLUDE THE FULL SCHEMA AND TABLE NAME exactly as returned from INFORMATION_SCHEMA (e.g., Sales.SalesOrderHeader, Sales.Customer, HumanResources.Employee, Production.Product, Person.Person).",
-            "- Every SQL query MUST be valid T-SQL and directly executable against the AdventureWorks database schema listed below.",
+            "- YOU MUST EXPLICITLY INCLUDE THE FULL SCHEMA AND TABLE NAME exactly as returned from INFORMATION_SCHEMA.",
+            "- Every SQL query MUST be valid T-SQL and directly executable against the database schema listed below.",
             "=================================================================================",
             ""
         ]
@@ -201,59 +361,3 @@ ORDER BY c.TABLE_SCHEMA, c.TABLE_NAME, c.ORDINAL_POSITION;
             lines.append("")
 
         return "\n".join(lines)
-
-    @classmethod
-    def _get_fallback_schema(cls) -> Dict[str, Any]:
-        """Provides verified fallback AdventureWorks schema if API is temporarily unreachable."""
-        fallback_tables = {
-            "HumanResources.Employee": {
-                "schema": "HumanResources", "table": "Employee",
-                "columns": [
-                    {"name": "BusinessEntityID", "type": "int", "is_pk": True},
-                    {"name": "NationalIDNumber", "type": "nvarchar", "is_pk": False},
-                    {"name": "JobTitle", "type": "nvarchar", "is_pk": False},
-                    {"name": "BirthDate", "type": "date", "is_pk": False},
-                    {"name": "MaritalStatus", "type": "nchar", "is_pk": False},
-                    {"name": "Gender", "type": "nchar", "is_pk": False},
-                    {"name": "HireDate", "type": "date", "is_pk": False},
-                    {"name": "SalariedFlag", "type": "bit", "is_pk": False},
-                    {"name": "VacationHours", "type": "smallint", "is_pk": False},
-                    {"name": "SickLeaveHours", "type": "smallint", "is_pk": False}
-                ]
-            },
-            "Person.Person": {
-                "schema": "Person", "table": "Person",
-                "columns": [
-                    {"name": "BusinessEntityID", "type": "int", "is_pk": True},
-                    {"name": "PersonType", "type": "nchar", "is_pk": False},
-                    {"name": "FirstName", "type": "nvarchar", "is_pk": False},
-                    {"name": "LastName", "type": "nvarchar", "is_pk": False},
-                    {"name": "EmailPromotion", "type": "int", "is_pk": False}
-                ]
-            },
-            "Sales.SalesOrderHeader": {
-                "schema": "Sales", "table": "SalesOrderHeader",
-                "columns": [
-                    {"name": "SalesOrderID", "type": "int", "is_pk": True},
-                    {"name": "OrderDate", "type": "datetime", "is_pk": False},
-                    {"name": "CustomerID", "type": "int", "is_pk": False},
-                    {"name": "SubTotal", "type": "money", "is_pk": False},
-                    {"name": "TaxAmt", "type": "money", "is_pk": False},
-                    {"name": "Freight", "type": "money", "is_pk": False},
-                    {"name": "TotalDue", "type": "money", "is_pk": False}
-                ]
-            },
-            "Production.Product": {
-                "schema": "Production", "table": "Product",
-                "columns": [
-                    {"name": "ProductID", "type": "int", "is_pk": True},
-                    {"name": "Name", "type": "nvarchar", "is_pk": False},
-                    {"name": "ProductNumber", "type": "nvarchar", "is_pk": False},
-                    {"name": "Color", "type": "nvarchar", "is_pk": False},
-                    {"name": "ListPrice", "type": "money", "is_pk": False}
-                ]
-            }
-        }
-        cls._cached_schema_info = {"database": "AdventureWorks", "tables_map": fallback_tables}
-        cls._cached_schema_text = cls._format_schema_for_prompt(fallback_tables)
-        return cls._cached_schema_info

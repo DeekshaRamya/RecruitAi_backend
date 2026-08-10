@@ -67,7 +67,7 @@ def test_evaluation_case2_all_tests_failed():
     assert res["is_correct"] is False
     assert res["attempted"] is True
 
-def test_evaluation_case3_partial_marks():
+def test_evaluation_case3_hardcoded_if_else():
     q = {
         "starterCode": "def solution(num):\n    pass",
         "visibleTestCases": [
@@ -75,12 +75,12 @@ def test_evaluation_case3_partial_marks():
             {"input": "3", "expectedOutput": "ODD"}
         ]
     }
-    # Candidate logic handles even but returns WRONG for odd
+    # Candidate logic attempts hardcoded check for num == 2
     cand_ans = "def solution(num):\n    return 'EVEN' if num == 2 else 'WRONG'"
     res = evaluate_python_coding_submission(cand_ans, q, q_marks=10.0)
-    assert res["status"] == "Partially Correct"
-    assert res["marks_awarded"] == 5.0
-    assert res["similarity_score"] == 50
+    assert res["status"] == "FAILED"
+    assert res["marks_awarded"] == 0.0
+    assert res["similarity_score"] == 0
     assert res["attempted"] is True
 
 def test_evaluation_case4_full_marks():
@@ -129,7 +129,7 @@ if __name__ == "__main__":
     test_is_code_attempted_valid_loop()
     test_evaluation_case1_not_attempted()
     test_evaluation_case2_all_tests_failed()
-    test_evaluation_case3_partial_marks()
+    test_evaluation_case3_hardcoded_if_else()
     test_evaluation_case4_full_marks()
     test_evaluation_print_only_solution()
     test_output_normalization()

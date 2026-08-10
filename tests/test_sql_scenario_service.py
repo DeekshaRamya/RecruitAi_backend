@@ -105,3 +105,49 @@ async def test_assessment_generation_service_sql_scenario_routing():
             assert res.questions[0].type == "SCENARIO"
             assert res.questions[1].type == "SCENARIO"
             assert mock_gen_scen.called
+
+def test_multi_table_schema_generation():
+    from app.services.sql_schema_service import SqlSchemaService
+    
+    mock_tables_map = {
+        "Production.Product": {
+            "schema": "Production", "table": "Product",
+            "columns": [{"name": "ProductID", "type": "int", "is_pk": True}, {"name": "Name", "type": "nvarchar"}]
+        },
+        "Production.ProductSubcategory": {
+            "schema": "Production", "table": "ProductSubcategory",
+            "columns": [{"name": "ProductSubcategoryID", "type": "int", "is_pk": True}, {"name": "Name", "type": "nvarchar"}]
+        },
+        "Sales.SalesOrderDetail": {
+            "schema": "Sales", "table": "SalesOrderDetail",
+            "columns": [{"name": "SalesOrderID", "type": "int", "is_pk": True}, {"name": "ProductID", "type": "int"}]
+        }
+    }
+
+    # 1-table query with scenario text mentioning other entities (e.g. sales, subcategory)
+    q1 = {
+        "expectedAnswer": "SELECT * FROM Production.Product;",
+        "scenario": "A sales manager needs to check product subcategory and order details for customers.",
+        "task": "Query product details from Production.Product table."
+    }
+    schemas1 = SqlSchemaService.get_database_schemas_for_question(q1, mock_tables_map)
+    assert len(schemas1) == 1
+    assert "Production.Product" in schemas1[0]
+    assert not any("Sales.SalesOrderDetail" in s for s in schemas1)
+    assert not any("Production.ProductSubcategory" in s for s in schemas1)
+
+    # 2-table query with JOIN
+    q2 = {"expectedAnswer": "SELECT p.Name, s.ProductID FROM Production.Product p JOIN Sales.SalesOrderDetail s ON p.ProductID = s.ProductID;"}
+    schemas2 = SqlSchemaService.get_database_schemas_for_question(q2, mock_tables_map)
+    assert len(schemas2) == 2
+    assert any("Production.Product" in s for s in schemas2)
+    assert any("Sales.SalesOrderDetail" in s for s in schemas2)
+    assert not any("Production.ProductSubcategory" in s for s in schemas2)
+
+    # 3-table query with JOIN
+    q3 = {"expectedAnswer": "SELECT p.Name FROM Production.Product p JOIN Production.ProductSubcategory ps ON p.ProductSubcategoryID = ps.ProductSubcategoryID JOIN Sales.SalesOrderDetail s ON p.ProductID = s.ProductID;"}
+    schemas3 = SqlSchemaService.get_database_schemas_for_question(q3, mock_tables_map)
+    assert len(schemas3) == 3
+    assert any("Production.Product" in s for s in schemas3)
+    assert any("Production.ProductSubcategory" in s for s in schemas3)
+    assert any("Sales.SalesOrderDetail" in s for s in schemas3)

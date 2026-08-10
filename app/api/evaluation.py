@@ -970,7 +970,10 @@ async def submit_assessment(
             q_marks = float(q.get("marks") or 10.0)
             max_marks += q_marks
 
-            eval_res = evaluate_python_coding_submission(cand_ans, q, q_marks=q_marks, code_executor=code_executor)
+            from app.utils.code_evaluator import evaluate_python_coding_submission_async
+            eval_res = await evaluate_python_coding_submission_async(
+                cand_ans, q, q_marks=q_marks, code_executor=code_executor, ai_service=ai_service
+            )
 
             status_val = eval_res["status"]
             is_correct = eval_res["is_correct"]

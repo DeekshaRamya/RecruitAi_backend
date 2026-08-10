@@ -200,52 +200,46 @@ class SqlScenarioService:
                     full_markdown_table = self._format_rows_to_markdown_table(columns, rows, max_rows=None)
                     preview_markdown_table = self._format_rows_to_markdown_table(columns, rows, max_rows=5)
 
-                    # Identify target table from live schema
-                    live_schema_info = SqlSchemaService.get_live_schema()
-                    tables_map = live_schema_info.get("tables_map", {})
-                    target_table = None
-                    for full_t in tables_map.keys():
-                        if full_t.lower() in solution_query.lower():
-                            target_table = full_t
-                            break
-                    if not target_table:
-                        target_table = list(tables_map.keys())[0] if tables_map else "Production.Product"
-
-                    # DDL Schema
-                    table_meta = tables_map.get(target_table, {})
-                    cols_meta = table_meta.get("columns", [])
-                    if cols_meta:
-                        col_defs = ", ".join([f"{c['name']} {c['type']}{' PRIMARY KEY' if c.get('is_pk') else ''}" for c in cols_meta])
-                        db_schema = [f"-- Live SQL Server Schema\nCREATE TABLE {target_table} ({col_defs});"]
-                    else:
-                        db_schema = [f"-- Live SQL Server Schema\nCREATE TABLE {target_table};"]
-
-                    # Populate real sample data via SELECT TOP 5 * FROM target_table
-                    try:
-                        sample_res = await self.execute_sql_via_api(query=f"SELECT TOP 5 * FROM {target_table};", exam_id=f"sample_{len(generated_questions)+1}")
-                        sample_lines = [f"-- Real data retrieved dynamically from connected SQL Server ({target_table})"]
-                        if sample_res.get("success", True) and sample_res.get("rows"):
-                            s_cols = sample_res.get("columns", [])
-                            for s_row in sample_res.get("rows", [])[:5]:
-                                vals = []
-                                for c in s_cols:
-                                    val = s_row.get(c)
-                                    if val is None:
-                                        vals.append("NULL")
-                                    elif isinstance(val, (int, float)):
-                                        vals.append(str(val))
-                                    else:
-                                        clean_val = str(val).replace("'", "''")
-                                        vals.append(f"'{clean_val}'")
-                                sample_lines.append(f"INSERT INTO {target_table} VALUES ({', '.join(vals)});")
-                            sample_data = sample_lines
-                        else:
-                            sample_data = [f"-- Connected to table {target_table} on live AdventureWorks database."]
-                    except Exception:
-                        sample_data = [f"-- Connected to table {target_table} on live AdventureWorks database."]
-
                     scenario_text = str(raw_q.get("scenario") or "").strip()
                     task_text = str(raw_q.get("task") or raw_q.get("candidateTask") or "").strip()
+
+                    # Dynamically identify ALL tables referenced in the query, scenario, or task
+                    live_schema_info = SqlSchemaService.get_live_schema()
+                    tables_map = live_schema_info.get("tables_map", {})
+                    
+                    q_obj = {
+                        "expectedAnswer": solution_query,
+                        "scenario": scenario_text,
+                        "task": task_text,
+                        "topic": raw_q.get("topic")
+                    }
+                    db_schema = SqlSchemaService.get_database_schemas_for_question(q_obj, tables_map)
+                    ref_tables = SqlSchemaService.get_referenced_tables(q_obj, tables_map)
+
+                    # Populate real sample data for all referenced tables
+                    sample_lines = []
+                    for t_idx, t_name in enumerate(ref_tables):
+                        try:
+                            sample_res = await self.execute_sql_via_api(query=f"SELECT TOP 5 * FROM {t_name};", exam_id=f"sample_{len(generated_questions)+1}_{t_idx}")
+                            if sample_res.get("success", True) and sample_res.get("rows"):
+                                sample_lines.append(f"-- Live sample data from SQL Server ({t_name})")
+                                s_cols = sample_res.get("columns", [])
+                                for s_row in sample_res.get("rows", [])[:3]:
+                                    vals = []
+                                    for c in s_cols:
+                                        val = s_row.get(c)
+                                        if val is None:
+                                            vals.append("NULL")
+                                        elif isinstance(val, (int, float)):
+                                            vals.append(str(val))
+                                        else:
+                                            clean_val = str(val).replace("'", "''")
+                                            vals.append(f"'{clean_val}'")
+                                    sample_lines.append(f"INSERT INTO {t_name} VALUES ({', '.join(vals)});")
+                        except Exception:
+                            sample_lines.append(f"-- Connected to table {t_name} on live AdventureWorks database.")
+
+                    sample_data = sample_lines if sample_lines else [f"-- Connected to tables: {', '.join(ref_tables)}"]
 
                     cols_formatted = "\n\n".join(columns) if columns else "Column1\n\nColumn2"
                     raw_io = str(raw_q.get("inputOutputFormat") or "").strip()
@@ -286,9 +280,11 @@ class SqlScenarioService:
                         "exampleOutput": preview_markdown_table,
                         "sampleOutput": preview_markdown_table,
                         "expectedOutput": full_markdown_table,
-                        "expectedRows": rows
+                        "expectedRows": rows,
+                        "is_enriched": True
                     }
                     final_q = self.openai_service._normalize_and_validate_sql_question(final_q)
+                    final_q["is_enriched"] = True
 
                     generated_questions.append(final_q)
                     logger.info(f"[SqlScenarioService] Successfully validated and added dynamic AI SQL question #{len(generated_questions)}: '{final_q['topic']}'")

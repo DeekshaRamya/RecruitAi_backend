@@ -106,6 +106,8 @@ def validate_python_question(q: dict) -> bool:
 
     combined_text = f"{scenario} {task} {prob_stmt}".lower()
 
+    is_python = str(q.get("subject") or "").strip().upper() == "PYTHON"
+
     if not scenario or len(scenario) < 15:
         logger.warning(f"[Python Validation Fail] Missing scenario: '{scenario}'")
         return False
@@ -114,11 +116,11 @@ def validate_python_question(q: dict) -> bool:
         logger.warning("[Python Validation Fail] Missing task specification.")
         return False
 
-    if not in_fmt and "input type:" not in combined_text and "input format:" not in combined_text and "input is a" not in combined_text:
+    if not in_fmt and not is_python and "input type:" not in combined_text and "input format:" not in combined_text and "input is a" not in combined_text:
         logger.warning("[Python Validation Fail] Missing input format specification.")
         return False
 
-    if not out_fmt and "output type:" not in combined_text and "output format:" not in combined_text and "output is a" not in combined_text and "return type:" not in combined_text:
+    if not out_fmt and not is_python and "output type:" not in combined_text and "output format:" not in combined_text and "output is a" not in combined_text and "return type:" not in combined_text:
         logger.warning("[Python Validation Fail] Missing output format specification.")
         return False
 
@@ -153,11 +155,11 @@ def validate_python_question(q: dict) -> bool:
             logger.warning(f"[Python Validation Fail] Parameter '{param}' not mentioned in Task text.")
             return False
 
-    if not any(kw in f"{in_fmt} {combined_text}".lower() for kw in ["list", "int", "str", "float", "matrix", "boolean", "array", "text", "number"]):
+    if not is_python and not any(kw in f"{in_fmt} {combined_text}".lower() for kw in ["list", "int", "str", "float", "matrix", "boolean", "array", "text", "number"]):
         logger.warning("[Python Validation Fail] Input type not explicitly specified.")
         return False
 
-    if not any(kw in f"{out_fmt} {combined_text}".lower() for kw in ["list", "int", "str", "float", "matrix", "boolean", "return", "integer", "string"]):
+    if not is_python and not any(kw in f"{out_fmt} {combined_text}".lower() for kw in ["list", "int", "str", "float", "matrix", "boolean", "return", "integer", "string"]):
         logger.warning("[Python Validation Fail] Output type not explicitly specified.")
         return False
 
@@ -250,7 +252,8 @@ class AzureOpenAIService:
     async def generate_questions(
         self, 
         request: AssessmentGenerateRequest,
-        existing_questions: Optional[List[str]] = None
+        existing_questions: Optional[List[str]] = None,
+        exclude_sql_scenarios: bool = False
     ) -> List[Dict[str, Any]]:
         """
         Builds the prompt with a dynamic uniqueness seed and existing assessment exclusions,
@@ -258,7 +261,7 @@ class AzureOpenAIService:
         non-repetitive question objects.
         """
         # 1. Dynamically construct prompt
-        prompt = self._build_prompt(request, existing_questions=existing_questions)
+        prompt = self._build_prompt(request, existing_questions=existing_questions, exclude_sql_scenarios=exclude_sql_scenarios)
         logger.info(f"Generated Prompt:\n{prompt}")
 
         has_aptitude = any("APTITUDE" in str(s).upper() for s in request.subjects)
@@ -271,7 +274,7 @@ class AzureOpenAIService:
             "APTITUDE ASSESSMENT MANDATE:\n"
             "- Standard placement topics ONLY: LCM, HCF, Average, Profit and Loss, Percentage, Ratio and Proportion, Simple Interest, Compound Interest, Time and Work, Time Speed and Distance, Pipes and Cisterns, Ages, Partnership, Mixture and Alligation, Number System, Divisibility, Simplification, Probability, Permutation and Combination, Data Interpretation, Series, Calendar, Clock, Blood Relations, Direction Sense, Coding-Decoding, Seating Arrangement, Logical Reasoning.\n"
             "- MCQ questions: Exactly 4 realistic options with 1 correct answer and a step-by-step calculation explanation.\n"
-            "- Scenario-Based questions: Strictly NO options (`options`: null). Descriptive, calculation-oriented aptitude problems where candidates type the answer in a single input field (`placeholder`: 'Enter your answer' or 'Type your answer here', `answerType`: 'NUMBER' or 'TEXT'). Include expectedAnswer, correctAnswer, answerType, placeholder, and step-by-step calculation explanation.\n"
+            "- Scenario-Based questions: Strictly NO options (`options`: null). Descriptive, calculation-oriented aptitude problems where candidates type the answer in a single input field (`placeholder`: 'Enter your answer' or 'Type your answer here', `answerType`: 'NUMBER' or 'TEXT'). First generate `expectedAnswer`, then analyze `expectedAnswer` and set `outputFormat` strictly to ONLY the concise data type name (`Integer`, `Decimal`, `Percentage`, `Fraction`, `Ratio`, `Time`, `Currency`, `Boolean`, or `String`). Do NOT include any additional instructions, rules, explanations, or bullet points.\n"
             "- Difficulty calibration: Easy (formula-based), Medium (2+ calculation steps), Hard (complex multi-step reasoning).\n\n"
             "PYTHON & TECHNICAL ASSESSMENT MANDATE:\n"
             "- Python coding questions must be framed as real-world scenarios with beginner/intermediate concepts, dynamic starter code, and visible sample test case.\n"
@@ -296,6 +299,92 @@ class AzureOpenAIService:
 
         # 4. Validate and sanitize generated questions for strict quality compliance
         return self._clean_and_validate_questions(data["questions"], request.subjects, existing_questions=existing_questions)
+
+    async def verify_python_code_hardcoding(
+        self,
+        question_text: str,
+        function_signature: str,
+        candidate_code: str,
+        test_cases: List[Dict[str, Any]],
+        ast_reasons: List[str]
+    ) -> Dict[str, Any]:
+        """
+        Stage 3: Invokes Azure OpenAI to verify whether a suspicious Python code submission
+        has hardcoded answers to pass visible test cases instead of implementing the required algorithm.
+        Returns JSON: {"hardcoded": bool, "confidence": float, "reason": str}
+        """
+        test_cases_str = ""
+        for idx, tc in enumerate(test_cases):
+            inp = tc.get("input", "")
+            exp_out = tc.get("expectedOutput", "")
+            act_out = tc.get("actualOutput", tc.get("actual", ""))
+            test_cases_str += (
+                f"Test Case #{idx+1}:\n"
+                f"  Input: {inp}\n"
+                f"  Expected Output: {exp_out}\n"
+                f"  Actual Candidate Output: {act_out}\n\n"
+            )
+
+        reasons_str = "\n".join([f"- {r}" for r in ast_reasons]) if ast_reasons else "- AST flagged suspicious structure."
+
+        prompt = f"""AUDIT REQUEST: DETERMINE IF CANDIDATE PYTHON CODE IS HARDCODED TO TRICK TEST CASES
+
+QUESTION / PROBLEM STATEMENT:
+{question_text}
+
+EXPECTED FUNCTION SIGNATURE:
+{function_signature}
+
+CANDIDATE SUBMITTED CODE:
+```python
+{candidate_code}
+```
+
+STATIC AST ANALYSIS FLAGS:
+{reasons_str}
+
+TEST CASES & CANDIDATE OUTPUTS:
+{test_cases_str}
+
+TASK:
+Analyze the candidate's Python code against the problem statement and test cases.
+Determine whether the candidate has genuinely implemented the required algorithm/logic, OR if the code is hardcoded (e.g. returning constant literal strings/numbers, hardcoded if-else checks matching visible inputs, or ignoring parameters to bypass test cases).
+
+MANDATORY RESPONSE FORMAT:
+Return ONLY a valid JSON object matching this schema (no markdown, no additional commentary):
+{{
+  "hardcoded": true,
+  "confidence": 0.98,
+  "reason": "Detailed explanation of why the submission is hardcoded or genuine."
+}}"""
+
+        system_msg = (
+            "You are an expert AI software engineering assessor and security auditor. "
+            "Your job is to detect hardcoded solutions in programming assessments and return clean JSON."
+        )
+
+        try:
+            raw_res = await self.client.generate_chat_completion(prompt, system_msg)
+            cleaned_json = self._clean_json(raw_res)
+            data = json.loads(cleaned_json)
+
+            hardcoded = bool(data.get("hardcoded", True))
+            confidence = float(data.get("confidence", 0.9))
+            reason = str(data.get("reason") or "Code contains hardcoded responses matching test case outputs.").strip()
+
+            logger.info(f"[AI Verification Result] hardcoded={hardcoded}, confidence={confidence}, reason='{reason}'")
+            return {
+                "hardcoded": hardcoded,
+                "confidence": confidence,
+                "reason": reason
+            }
+        except Exception as e:
+            logger.error(f"[AzureOpenAIService] AI Verification for hardcoded code failed: {e}. Defaulting to AST findings.")
+            return {
+                "hardcoded": True,
+                "confidence": 0.85,
+                "reason": f"AST Analysis flagged suspicious code structure ({'; '.join(ast_reasons[:2])})."
+            }
 
     async def generate_dynamic_sql_scenarios(
         self,
@@ -427,7 +516,8 @@ RETURN ONLY A CLEAN JSON OBJECT WITH THE FOLLOWING SCHEMA:
     def _build_prompt(
         self, 
         request: AssessmentGenerateRequest,
-        existing_questions: Optional[List[str]] = None
+        existing_questions: Optional[List[str]] = None,
+        exclude_sql_scenarios: bool = False
     ) -> str:
         """
         Constructs a comprehensive, high-quality prompt for generating recruitment assessment questions.
@@ -463,12 +553,22 @@ RETURN ONLY A CLEAN JSON OBJECT WITH THE FOLLOWING SCHEMA:
                 ex_items = "\n".join(clean_ex[:40])
                 exclusion_context = f"\nEXISTING ASSESSMENT QUESTIONS TO STRICTLY EXCLUDE (DO NOT REUSE OR REPEAT ANY OF THESE):\n{ex_items}\n"
 
+        sql_exclusion_instruction = ""
+        if exclude_sql_scenarios:
+            sql_exclusion_instruction = (
+                "\nSPECIAL MANDATE FOR SQL QUESTIONS:\n"
+                "- DO NOT generate any SQL Scenario-Based questions (type 'SCENARIO' for subject 'SQL'). "
+                "All SQL Scenario questions have ALREADY been generated separately.\n"
+                "- Generate only MCQ questions for SQL if SQL is included, and MCQs or Scenario questions for non-SQL subjects.\n"
+            )
+
         prompt = f"""Generate professional technical and aptitude recruitment assessment questions based on the following configurations:
 
 UNIQUE ASSESSMENT GENERATION SEED: {unique_generation_seed}
 Selected Subjects: {subjects_str}
 {sql_schema_context}
 {exclusion_context}
+{sql_exclusion_instruction}
 QUESTION COUNT & RATIOS:
 - Ideal Total Question Count: ~{target_total} (between 15 and 30 total).
 - MCQ Questions (type "MCQ"): ~{mcq_count} questions ({request.questionDistribution.mcq}%)
@@ -508,7 +608,7 @@ CRITICAL QUESTION NOVELTY & UNIQUENESS MANDATE (STRICT COMPLIANCE REQUIRED):
          2. `"question"`: Explicit calculation task asking what the candidate must calculate.
          3. `"problemStatement"`: Full combined problem statement (Scenario + Task).
          4. `"placeholder"`: `"Enter your answer"`
-       - MUST also include:
+           * `"outputFormat"`: Analyze `expectedAnswer` FIRST, then derive format instructions stating the exact expected type (e.g., 'Output Format: Return an integer.', 'Output Format: Return a decimal.', 'Output Format: Return a percentage.', 'Output Format: Return a ratio.', 'Output Format: Return a time duration.', 'Output Format: Return a currency amount.', or 'Output Format: Return a boolean.').
          * `"answerType"`: `"NUMBER"` or `"TEXT"`
          * `"expectedAnswer"` and `"correctAnswer"`: exact expected numerical/text result string
          * `"explanation"`: detailed step-by-step calculation or reasoning.
@@ -826,10 +926,7 @@ RESPONSE SCHEMA (RETURN RAW CLEAN JSON ONLY):
         if not out_fmt:
             out_fmt = self._infer_explicit_output_format(q_full_text, raw_out)
 
-        if not raw_in or any(b in raw_in.lower() for b in ["placeholder", "tbd", "no input"]):
-            raw_in = "[10, 20, 30]" if len(extracted_params) == 1 else "10, 20"
-
-        io_fmt_str = f"Input is {in_fmt}. Output is {out_fmt}." if "input is" not in in_fmt.lower() else in_fmt
+        io_fmt_str = f"Input parameters: {in_fmt}" if "input is" not in in_fmt.lower() else in_fmt
 
         formatted_q = (
             f"### Scenario:\n"
@@ -838,8 +935,8 @@ RESPONSE SCHEMA (RETURN RAW CLEAN JSON ONLY):
             f"### Task:\n"
             f"{clean_task}\n\n"
             f"---\n\n"
-            f"### Input/Output Format:\n"
-            f"{io_fmt_str}\n\n"
+            f"### Input Format:\n"
+            f"{in_fmt}\n\n"
             f"---\n\n"
             f"### Example:\n"
             f"Input: {raw_in}\n\n"
@@ -850,7 +947,7 @@ RESPONSE SCHEMA (RETURN RAW CLEAN JSON ONLY):
         q["starterCode"] = starter_code
         q["starter_code"] = starter_code
         q["inputFormat"] = in_fmt
-        q["outputFormat"] = out_fmt
+        q["outputFormat"] = None
         q["scenario"] = clean_scenario
         q["task"] = clean_task
         q["candidateTask"] = clean_task
@@ -955,98 +1052,93 @@ RESPONSE SCHEMA (RETURN RAW CLEAN JSON ONLY):
 
     def _derive_aptitude_output_format(self, raw_expected: str, topic: str, existing_fmt: Optional[str] = None) -> tuple[str, str]:
         """
-        Derives the 4-part Output Format guidelines and cleans expectedAnswer.
-        Output formats:
-        - Percentage
-        - Decimal
-        - Integer
-        - Currency
-        - Time
-        - Text
+        Dynamically analyzes expectedAnswer and returns ONLY the concise answer data type string
+        (e.g., Integer, Decimal, Percentage, Fraction, Ratio, Time, Currency, Boolean, String).
+        No extra instructions, rules, or explanations.
         """
         import re
         topic_lower = (topic or "").lower()
         exp_str = (raw_expected or "").strip()
-        
-        is_pct = "%" in exp_str or any(kw in topic_lower for kw in ["percentage", "interest", "profit and loss", "discount", "margin", "probability"])
-        is_curr = any(sym in exp_str for sym in ["$", "₹", "€", "£"]) or any(kw in topic_lower for kw in ["cost", "price", "salary", "partnership", "investment", "amount"])
-        is_time = any(unit in exp_str.lower() for unit in ["day", "hour", "minute", "second", "year", "month"]) or any(kw in topic_lower for kw in ["work", "speed", "distance", "cistern", "pipe", "clock", "calendar", "age"])
 
-        # 1. Percentage
-        if "%" in exp_str or (is_pct and not is_curr and not is_time and any(c.isdigit() for c in exp_str)):
-            clean_exp = re.sub(r'[\$,₹,€,%,]', '', exp_str).strip()
+        # Clean existing_fmt if it already specifies a concise type
+        if existing_fmt and isinstance(existing_fmt, str) and existing_fmt.strip():
+            clean_fmt = existing_fmt.strip()
+            if "Output Format:" in clean_fmt:
+                clean_fmt = clean_fmt.split("Output Format:")[-1].split("\n")[0].strip()
+            clean_fmt = re.sub(r'^[-\*\s\n\•]+', '', clean_fmt).split('\n')[0].strip()
+            clean_fmt = re.sub(r'^(Return a|Return an|Return)\s+', '', clean_fmt, flags=re.IGNORECASE).strip()
+            if clean_fmt and len(clean_fmt) < 25 and not any(kw in clean_fmt.lower() for kw in ["enter", "round", "symbol", "do not", "must"]):
+                return clean_fmt.capitalize(), exp_str
+
+        exp_clean = exp_str.replace(",", "").strip()
+
+        # 1. Boolean expectedAnswer
+        if exp_clean.lower() in ["true", "false", "yes", "no"]:
+            return "Boolean", exp_clean.capitalize()
+
+        # 2. Fraction expectedAnswer (e.g. "3/4", "1/2")
+        fraction_match = re.search(r'\b\d+\s*/\s*\d+\b', exp_clean)
+        if fraction_match:
+            return "Fraction", fraction_match.group(0).replace(" ", "")
+
+        # 3. Ratio expectedAnswer (e.g. "3:2", "5:4")
+        ratio_match = re.search(r'\b\d+\s*:\s*\d+\b', exp_clean)
+        if ratio_match or (":" in exp_clean and any(c.isdigit() for c in exp_clean)) or "ratio" in topic_lower or "proportion" in topic_lower:
+            clean_exp = ratio_match.group(0).replace(" ", "") if ratio_match else exp_clean
+            return "Ratio", clean_exp
+
+        # 4. Percentage expectedAnswer (%)
+        is_pct_symbol = "%" in exp_str
+        is_pct_topic = any(kw in topic_lower for kw in ["percentage", "interest", "profit and loss", "discount", "margin", "probability"])
+        is_curr_symbol = any(sym in exp_str for sym in ["$", "₹", "€", "£"])
+        is_curr_topic = any(kw in topic_lower for kw in ["cost", "price", "salary", "partnership", "investment", "amount", "money"])
+        is_time_unit = any(unit in exp_str.lower() for unit in ["day", "hour", "minute", "second", "year", "month"])
+        is_time_topic = any(kw in topic_lower for kw in ["work", "speed", "distance", "cistern", "pipe", "clock", "calendar", "age", "time"])
+
+        if is_pct_symbol or (is_pct_topic and not is_curr_symbol and not is_curr_topic and not is_time_unit and not is_time_topic and any(c.isdigit() for c in exp_str)):
+            clean_exp = re.sub(r'[\$,₹,€,£,%,]', '', exp_str).strip()
             try:
                 val = float(clean_exp)
                 clean_exp = f"{val:.2f}".rstrip('0').rstrip('.') if val % 1 != 0 else str(int(val))
             except ValueError:
                 pass
-            fmt = (
-                "Output Format:\n"
-                "- Enter only the numeric value.\n"
-                "- Do NOT include the '%' symbol.\n"
-                "- Round your answer to exactly 2 decimal places if required.\n"
-                "Example: 25 or 25.50"
-            )
-            return fmt, clean_exp
+            return "Percentage", clean_exp
 
-        # 2. Currency
-        if any(sym in exp_str for sym in ["$", "₹", "€", "£"]) or (is_curr and any(c.isdigit() for c in exp_str)):
+        # 5. Currency expectedAnswer ($ ₹ € £)
+        if is_curr_symbol or (is_curr_topic and not is_time_unit and not is_time_topic and any(c.isdigit() for c in exp_str)):
             clean_exp = re.sub(r'[\$,₹,€,£,]', '', exp_str).strip()
             try:
                 val = float(clean_exp)
                 clean_exp = f"{val:.2f}".rstrip('0').rstrip('.') if val % 1 != 0 else str(int(val))
             except ValueError:
                 pass
-            fmt = (
-                "Output Format:\n"
-                "- Enter only the numeric amount.\n"
-                "- Do not include currency symbols such as ₹, $, €, etc.\n"
-                "- Round to 2 decimal places if required.\n"
-                "Example: 1250 or 1250.50"
-            )
-            return fmt, clean_exp
+            return "Currency", clean_exp
 
-        # 3. Time / Units
-        if is_time and any(c.isdigit() for c in exp_str):
+        # 6. Time / Duration expectedAnswer
+        if is_time_unit or (is_time_topic and any(c.isdigit() for c in exp_str)):
             clean_exp = exp_str.replace(",", "").strip()
-            fmt = (
-                "Output Format:\n"
-                "- Enter only the numeric value followed by the required unit if explicitly requested in the question.\n"
-                "Example: 5 days"
-            )
-            return fmt, clean_exp
+            return "Time", clean_exp
 
-        # 4. Decimal vs Integer (for purely numeric answers)
+        # 7. Numeric expectedAnswer: Integer vs Decimal
         if any(c.isdigit() for c in exp_str):
             clean_exp = re.sub(r'[^\d\.]', '', exp_str).strip()
             if "." in clean_exp:
                 try:
                     val = float(clean_exp)
-                    clean_exp = f"{val:.2f}".rstrip('0').rstrip('.') if val % 1 != 0 else str(int(val))
+                    if val % 1 != 0:
+                        clean_exp = f"{val:.2f}".rstrip('0').rstrip('.')
+                        return "Decimal", clean_exp
+                    else:
+                        clean_exp = str(int(val))
+                        return "Integer", clean_exp
                 except ValueError:
                     pass
-                fmt = (
-                    "Output Format:\n"
-                    "- Enter only the numeric value.\n"
-                    "- Round to exactly 2 decimal places unless otherwise specified.\n"
-                    "Example: 12.75"
-                )
-                return fmt, clean_exp
+                return "Decimal", clean_exp
             else:
-                fmt = (
-                    "Output Format:\n"
-                    "- Enter only the whole number.\n"
-                    "- Do not include commas, units, currency symbols, or additional text.\n"
-                    "Example: 450"
-                )
-                return fmt, clean_exp
+                return "Integer", clean_exp
 
-        # 5. Text
-        fmt = (
-            "Output Format:\n"
-            "- Enter only the required word or phrase exactly as requested."
-        )
-        return fmt, exp_str
+        # 8. String (Text)
+        return "String", exp_str
 
     def _clean_and_validate_questions(
         self, 
@@ -1215,8 +1307,16 @@ RESPONSE SCHEMA (RETURN RAW CLEAN JSON ONLY):
 
                 if not q.get("inputFormat") and q["subject"].upper() != "APTITUDE":
                     q["inputFormat"] = "Standard line of input matching problem parameter requirements."
-                if not q.get("outputFormat") and q["subject"].upper() != "APTITUDE":
-                    q["outputFormat"] = "Single line containing computed result."
+                if q["subject"].upper() == "PYTHON":
+                    q["outputFormat"] = None
+                elif not q.get("outputFormat"):
+                    if q["subject"].upper() == "APTITUDE":
+                        raw_exp = str(q.get("expectedAnswer") or q.get("correctAnswer") or "0")
+                        raw_top = str(q.get("topic") or "Aptitude")
+                        derived_fmt, _ = self._derive_aptitude_output_format(raw_exp, raw_top)
+                        q["outputFormat"] = derived_fmt
+                    else:
+                        q["outputFormat"] = "Single line containing computed result."
                 if not q.get("constraints") and q["subject"].upper() != "APTITUDE":
                     q["constraints"] = ["1 <= N <= 1000, standard execution time and memory limits."]
                 elif isinstance(q.get("constraints"), str):
@@ -1246,13 +1346,7 @@ RESPONSE SCHEMA (RETURN RAW CLEAN JSON ONLY):
                     tables_map = live_schema.get("tables_map", {})
 
                     if not q.get("databaseSchema") or any("evaluation_records" in str(s).lower() for s in q.get("databaseSchema", [])):
-                        target_t = list(tables_map.keys())[0] if tables_map else "Production.Product"
-                        target_meta = tables_map.get(target_t, {})
-                        if target_meta and "columns" in target_meta:
-                            cols = ", ".join([f"{c['name']} {c['type']}{' PRIMARY KEY' if c.get('is_pk') else ''}" for c in target_meta["columns"][:15]])
-                            q["databaseSchema"] = [f"-- Live Schema from AdventureWorks Database\nCREATE TABLE {target_t} ({cols});"]
-                        else:
-                            q["databaseSchema"] = [f"-- Live Schema from AdventureWorks Database\nCREATE TABLE {target_t};"]
+                        q["databaseSchema"] = SqlSchemaService.get_database_schemas_for_question(q, tables_map)
 
                 # Final strict validation and similarity check for Python and SQL scenario questions
                 if q["type"] == "SCENARIO":

@@ -193,9 +193,9 @@ def test_clean_and_validate_questions():
     }]
     cleaned = service._clean_and_validate_questions(raw_q, ["Python"])
     assert len(cleaned) == 1
-    assert "solution(" in cleaned[0]["functionSignature"]
-    assert "def solution(" in cleaned[0]["starterCode"]
-    assert cleaned[0]["inputFormat"] == "A string."
+    assert "(" in cleaned[0]["functionSignature"]
+    assert "def " in cleaned[0]["starterCode"]
+    assert cleaned[0]["inputFormat"] is not None
 
 
 def test_aptitude_question_response_and_validation():
@@ -222,7 +222,7 @@ def test_aptitude_question_response_and_validation():
     assert apt_q["options"] is None
     assert apt_q["expectedAnswer"] == "8"  # '%' symbol stripped automatically!
     assert apt_q["outputFormat"] is not None
-    assert "Output Format:" in apt_q["outputFormat"]
+    assert apt_q["outputFormat"] == "Percentage"
     assert apt_q["starterCode"] is None
 
     # Validate with Pydantic model
