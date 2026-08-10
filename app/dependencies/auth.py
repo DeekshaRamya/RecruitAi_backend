@@ -23,15 +23,14 @@ async def get_current_user(token: str | None = Depends(oauth2_scheme), db: Async
         result = await db.execute(select(User).where(User.role == UserRole.RECRUITER))
         recruiter = result.scalars().first()
         if not recruiter:
+            import uuid
             recruiter = User(
+                id=uuid.UUID("00000000-0000-0000-0000-000000000001"),
                 full_name="Local Dev Recruiter",
                 email="dev_recruiter@recruitai.local",
                 role=UserRole.RECRUITER,
                 microsoft_id="temp_dev_recruiter_id"
             )
-            db.add(recruiter)
-            await db.commit()
-            await db.refresh(recruiter)
         return recruiter
 
     if not token:

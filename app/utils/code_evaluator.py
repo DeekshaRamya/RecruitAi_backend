@@ -1,7 +1,7 @@
 import ast
 import logging
 import re
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any
 
 logger = logging.getLogger("recruitai-backend.code_evaluator")
 

@@ -138,7 +138,7 @@ from app.database.models import UserRole
 from app.schemas.recruiter import CandidateDetailResponse
 from app.core import security
 
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel
 
 class CreateCandidateRequest(BaseModel):
     name: str

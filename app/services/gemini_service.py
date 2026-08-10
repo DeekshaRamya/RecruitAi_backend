@@ -2,7 +2,6 @@ import json
 import logging
 import httpx
 from typing import Dict, Any, List, Optional
-from fastapi import HTTPException
 from app.core.config import settings
 
 logger = logging.getLogger("recruitai-backend.gemini_service")

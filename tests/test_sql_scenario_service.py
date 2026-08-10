@@ -1,5 +1,4 @@
 import pytest
-import asyncio
 from unittest.mock import AsyncMock, patch
 from app.schemas.assessment import (
     AssessmentGenerateRequest,
@@ -22,8 +21,21 @@ async def test_sql_scenario_service_api_call():
         "success": True
     }
 
-    with patch.object(service, "execute_sql_via_api", new_callable=AsyncMock) as mock_exec:
+    mock_ai_questions = [{
+        "subject": "SQL",
+        "topic": "HumanResources",
+        "type": "SCENARIO",
+        "difficulty": "Easy",
+        "scenario": "The HR manager wants a list of all active employee IDs.",
+        "task": "Use **HumanResources.Employee** (to get BusinessEntityID).\n- Filter by SalariedFlag = 1.",
+        "inputOutputFormat": "Query live database and return BusinessEntityID.",
+        "expectedAnswer": "SELECT BusinessEntityID FROM HumanResources.Employee WHERE SalariedFlag = 1;"
+    }]
+
+    with patch.object(service, "execute_sql_via_api", new_callable=AsyncMock) as mock_exec, \
+         patch.object(service.openai_service, "generate_dynamic_sql_scenarios", new_callable=AsyncMock) as mock_ai:
         mock_exec.return_value = mock_api_res
+        mock_ai.return_value = mock_ai_questions
 
         diff_dist = DifficultyDistribution(easy=100, medium=0, hard=0)
         questions = await service.generate_sql_scenarios(count=1, difficulty_distribution=diff_dist)

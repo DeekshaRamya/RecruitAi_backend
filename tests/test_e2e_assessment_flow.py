@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, patch
 from fastapi.testclient import TestClient
 from app.main import app
-from app.database.models import User, UserRole, Assessment, AssessmentAssignment
+from app.database.models import User, UserRole
 from app.core.security import create_access_token
 
 @pytest.fixture
@@ -68,7 +68,7 @@ async def test_e2e_assessment_flow(client):
                 "scenario": "You have an employees table with id and name columns.",
                 "question": "Write a query to retrieve all employees name.",
                 "options": None,
-                "correctAnswer": "SELECT name FROM employees;",
+                "correctAnswer": "SELECT BusinessEntityID FROM HumanResources.Employee;",
                 "exampleInput": "N/A",
                 "exampleOutput": "N/A"
             }
@@ -133,7 +133,7 @@ async def test_e2e_assessment_flow(client):
             },
             {
                 "questionId": "q_scenario_1",
-                "answer": "SELECT name FROM employees;" # Scenario answer to grade via AI
+                "answer": "SELECT BusinessEntityID FROM HumanResources.Employee;" # Scenario answer to grade via AI
             }
         ]
     }

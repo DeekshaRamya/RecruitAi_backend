@@ -1,6 +1,6 @@
 import pytest
 import asyncio
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 from pydantic import ValidationError
 from fastapi import HTTPException
 
@@ -14,11 +14,9 @@ from app.schemas.interview import (
     InterviewGenerateRequest,
     InterviewGenerateResponse,
     InterviewEvaluateRequest,
-    InterviewEvaluateResponse,
-    FollowUpQuestion
+    InterviewEvaluateResponse
 )
 from app.services.interview_service import InterviewService
-from app.services.azure_openai_service import AzureOpenAIService
 
 
 # ==========================================

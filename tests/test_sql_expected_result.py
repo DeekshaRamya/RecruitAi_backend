@@ -1,4 +1,3 @@
-import pytest
 from app.services.azure_openai_service import AzureOpenAIService
 from app.services.sql_scenario_service import SqlScenarioService
 from app.api.evaluation import compare_sql_datasets

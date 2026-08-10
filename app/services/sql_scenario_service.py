@@ -1,9 +1,7 @@
 import logging
-import random
 import time
 import httpx
 from typing import Dict, Any, List, Optional
-from fastapi import HTTPException, status
 from app.core.config import settings
 from app.schemas.assessment import DifficultyDistribution
 from app.services.azure_openai_service import AzureOpenAIService, validate_sql_question, is_duplicate_or_similar
@@ -257,6 +255,7 @@ class SqlScenarioService:
                     )
 
                     # Build complete validated question object
+                    target_table = ref_tables[0] if ref_tables else "Database"
                     final_q = {
                         "id": f"q_sql_dyn_{len(generated_questions)+1}_{int(time.time())}",
                         "subject": "SQL",

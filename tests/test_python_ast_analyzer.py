@@ -1,5 +1,4 @@
-import pytest
-from app.utils.python_ast_analyzer import analyze_python_ast, is_constant_expr
+from app.utils.python_ast_analyzer import analyze_python_ast
 from app.utils.code_evaluator import evaluate_python_coding_submission
 
 

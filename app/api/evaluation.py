@@ -13,7 +13,6 @@ from app.database.database import get_db, AsyncSessionLocal
 logger = logging.getLogger(__name__)
 from app.database.models import (
     User, 
-    Assessment, 
     AssessmentAssignment, 
     UserRole, 
     CandidateAnswer, 
@@ -38,7 +37,7 @@ from app.schemas.evaluation import (
 )
 from app.services.azure_openai_service import AzureOpenAIService
 from app.services.code_execution_service import CodeExecutionService
-from app.utils.code_evaluator import evaluate_python_coding_submission, is_code_attempted, is_coding_scenario_question
+from app.utils.code_evaluator import evaluate_python_coding_submission_async, is_coding_scenario_question
 from app.dependencies.auth import require_candidate, require_recruiter, get_current_user
 from app.api.assignment import check_and_update_expired_assignments
 
@@ -970,7 +969,6 @@ async def submit_assessment(
             q_marks = float(q.get("marks") or 10.0)
             max_marks += q_marks
 
-            from app.utils.code_evaluator import evaluate_python_coding_submission_async
             eval_res = await evaluate_python_coding_submission_async(
                 cand_ans, q, q_marks=q_marks, code_executor=code_executor, ai_service=ai_service
             )

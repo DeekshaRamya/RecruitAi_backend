@@ -1,7 +1,6 @@
 import pytest
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 from pydantic import ValidationError
-from fastapi import HTTPException
 
 # Override settings for testing environment to prevent initialization errors
 from app.core.config import settings
@@ -11,10 +10,7 @@ settings.AZURE_OPENAI_API_VERSION = "2024-12-01-preview"
 
 from app.schemas.assessment import (
     AssessmentGenerateRequest,
-    QuestionDistribution,
-    DifficultyDistribution,
-    QuestionResponse,
-    AssessmentGenerateResponse
+    QuestionResponse
 )
 from app.services.assessment_generation_service import AssessmentGenerationService
 from app.services.azure_openai_service import AzureOpenAIService

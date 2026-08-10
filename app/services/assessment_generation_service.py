@@ -1,7 +1,6 @@
 import logging
-from typing import Optional, List, Dict, Any
+from typing import Optional
 from fastapi import HTTPException, status
-import httpx
 
 from app.schemas.assessment import (
     AssessmentGenerateRequest,
