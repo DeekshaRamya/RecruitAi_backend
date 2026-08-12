@@ -851,3 +851,141 @@ class GeminiService:
             "recommended_english_level": overall_english_level
         }
 
+    async def transcribe_audio(self, audio_bytes: bytes, mime_type: str) -> str:
+        """
+        Transcribes the given audio bytes using Gemini API generateContent.
+        """
+        import base64
+        if not self.api_key:
+            raise ValueError("Gemini API key is not configured.")
+        
+        model_name = self.model
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={self.api_key}"
+        headers = {"Content-Type": "application/json"}
+        
+        encoded_audio = base64.b64encode(audio_bytes).decode("utf-8")
+        payload = {
+            "contents": [
+                {
+                    "parts": [
+                        {
+                            "inlineData": {
+                                "mimeType": mime_type,
+                                "data": encoded_audio
+                            }
+                        },
+                        {
+                            "text": (
+                                "You are a highly accurate speech-to-text transcriber. "
+                                "Identify the language of the speech in the audio. "
+                                "CRITICAL: You must only transcribe if the speaker is speaking in English. "
+                                "If the speaker is speaking in Tamil, Hindi, or any language other than English, return an empty string. "
+                                "Do not add any explanations, commentary, corrections, or notes. "
+                                "Just return the plain transcribed English text, or an empty string if the audio is silent or non-English."
+                            )
+                        }
+                    ]
+                }
+            ]
+        }
+        
+        async with httpx.AsyncClient() as client:
+            response = await client.post(url, json=payload, headers=headers, timeout=30.0)
+            if response.status_code == 200:
+                data = response.json()
+                try:
+                    text = data["candidates"][0]["content"]["parts"][0]["text"]
+                    return text.strip()
+                except (KeyError, IndexError):
+                    logger.warning(f"Gemini transcription response structure unexpected: {data}")
+                    return ""
+            else:
+                logger.error(f"Gemini API returned error status {response.status_code}: {response.text}")
+                raise ValueError("Failed to transcribe audio via Gemini API")
+
+    async def generate_tts(self, text: str) -> str:
+        """
+        Generates TTS speech for the given text using Gemini API with AUDIO modality
+        and returns a base64 encoded WAV audio string.
+        """
+        import base64
+        if not self.api_key:
+            raise ValueError("Gemini API key is not configured.")
+
+        # Use the dedicated tts model
+        model_name = "gemini-3.1-flash-tts-preview"
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={self.api_key}"
+        headers = {"Content-Type": "application/json"}
+
+        payload = {
+            "contents": [
+                {
+                    "parts": [{"text": text}]
+                }
+            ],
+            "generationConfig": {
+                "responseModalities": ["AUDIO"],
+                "speechConfig": {
+                    "voiceConfig": {
+                        "prebuiltVoiceConfig": {
+                            "voiceName": self.voice
+                        }
+                    }
+                }
+            }
+        }
+
+        async with httpx.AsyncClient() as client:
+            response = await client.post(url, json=payload, headers=headers, timeout=20.0)
+            if response.status_code == 200:
+                data = response.json()
+                try:
+                    parts = data["candidates"][0]["content"]["parts"]
+                    for part in parts:
+                        if "inlineData" in part:
+                            raw_pcm_base64 = part["inlineData"]["data"]
+                            raw_pcm_bytes = base64.b64decode(raw_pcm_base64)
+                            
+                            # Wrap raw L16 PCM into a standard WAV file header
+                            wav_bytes = self._pcm_to_wav(raw_pcm_bytes)
+                            return base64.b64encode(wav_bytes).decode("utf-8")
+                except (KeyError, IndexError) as e:
+                    logger.warning(f"Gemini TTS response structure unexpected: {data}")
+                    raise ValueError(f"Unexpected TTS response structure: {str(e)}")
+            else:
+                logger.error(f"Gemini TTS API returned error status {response.status_code}: {response.text}")
+                raise ValueError("Failed to generate TTS speech via Gemini API")
+        
+        raise ValueError("No audio content returned from Gemini TTS API")
+
+    def _pcm_to_wav(self, pcm_data: bytes, sample_rate: int = 24000, channels: int = 1, bit_depth: int = 16) -> bytes:
+        """
+        Wraps raw L16 PCM audio bytes into a standard 44-byte WAV header.
+        """
+        num_samples = len(pcm_data) // (bit_depth // 8)
+        byte_rate = sample_rate * channels * (bit_depth // 8)
+        block_align = channels * (bit_depth // 8)
+        
+        header = bytearray()
+        header.extend(b'RIFF')
+        header.extend((36 + len(pcm_data)).to_bytes(4, 'little'))
+        header.extend(b'WAVE')
+        header.extend(b'fmt ')
+        header.extend((16).to_bytes(4, 'little'))
+        header.extend((1).to_bytes(2, 'little'))
+        header.extend((channels).to_bytes(2, 'little'))
+        header.extend((sample_rate).to_bytes(4, 'little'))
+        header.extend((byte_rate).to_bytes(4, 'little'))
+        header.extend((block_align).to_bytes(2, 'little'))
+        header.extend((bit_depth).to_bytes(2, 'little'))
+        header.extend(b'data')
+        header.extend((len(pcm_data)).to_bytes(4, 'little'))
+        
+        return bytes(header) + pcm_data
+
+
+
+
+
+
+

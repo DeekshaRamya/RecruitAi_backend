@@ -146,3 +146,78 @@ async def test_off_topic_unrelated_transition():
         
         assert "stay focused" in response["next_question"].lower() or "DataSys" in response["next_question"]
         assert "off-topic" in response["analysis"]["grammar_notes"].lower()
+
+
+@pytest.mark.anyio
+async def test_transcribe_audio_success():
+    """
+    Verify that transcribe_audio successfully sends base64 audio to Gemini and returns the transcript.
+    """
+    from unittest.mock import MagicMock
+    service = GeminiService()
+    service.api_key = "test_key"
+    
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_response.json.return_value = {
+        "candidates": [
+            {
+                "content": {
+                    "parts": [
+                        {"text": "Hello, this is a test transcription."}
+                    ]
+                }
+            }
+        ]
+    }
+    
+    with patch("httpx.AsyncClient.post", return_value=mock_response) as mock_post:
+        transcript = await service.transcribe_audio(b"fake_audio_bytes", "audio/webm")
+        assert transcript == "Hello, this is a test transcription."
+        mock_post.assert_called_once()
+        assert "key=test_key" in str(mock_post.call_args[0][0])
+
+
+@pytest.mark.anyio
+async def test_generate_tts_success():
+    """
+    Verify that generate_tts successfully fetches prebuilt voice audio from Gemini,
+    converts it to WAV, and returns base64 string.
+    """
+    from unittest.mock import MagicMock
+    import base64
+    service = GeminiService()
+    service.api_key = "test_key"
+    
+    raw_pcm = b'\x00\x00' * 10
+    raw_pcm_base64 = base64.b64encode(raw_pcm).decode("utf-8")
+    
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_response.json.return_value = {
+        "candidates": [
+            {
+                "content": {
+                    "parts": [
+                        {
+                            "inlineData": {
+                                "mimeType": "audio/l16; rate=24000; channels=1",
+                                "data": raw_pcm_base64
+                            }
+                        }
+                    ]
+                }
+            }
+        ]
+    }
+    
+    with patch("httpx.AsyncClient.post", return_value=mock_response) as mock_post:
+        audio_b64 = await service.generate_tts("Hello Jane")
+        assert audio_b64 is not None
+        wav_bytes = base64.b64decode(audio_b64)
+        assert wav_bytes.startswith(b"RIFF")
+        mock_post.assert_called_once()
+        assert "gemini-3.1-flash-tts-preview" in str(mock_post.call_args[0][0])
+
+
+
