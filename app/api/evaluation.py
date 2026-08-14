@@ -174,7 +174,7 @@ def compare_sql_datasets(cand_exec: Dict[str, Any], exp_exec: Dict[str, Any], q_
     return False
 
 
-async def evaluate_sql_question(cand_ans: str, q: Dict[str, Any], q_marks: float = 10.0) -> Dict[str, Any]:
+async def evaluate_sql_question(cand_ans: str, q: Dict[str, Any], q_marks: float = 5.0) -> Dict[str, Any]:
     """
     Evaluates SQL Scenario-Based submission strictly using result set execution comparison.
     NEVER compares SQL text queries or uses AI string similarity.
@@ -702,7 +702,7 @@ async def process_ai_evaluations_and_summary_background(
                         elif eval_res and ans_obj:
                             score = float(eval_res.get("score", 0))
                             q_type = str(q_dict.get("type", "SCENARIO")).upper()
-                            q_marks = float(q_dict.get("marks") or 10.0) if q_type in {"CODING", "PYTHON_CODING"} else 10.0
+                            q_marks = float(q_dict.get("marks") or 5.0)
                             
                             ans_obj.similarity_score = int(eval_res.get("similarity_score", score))
                             ans_obj.status = eval_res.get("status", "Incorrect")
@@ -731,7 +731,7 @@ async def process_ai_evaluations_and_summary_background(
                     for q in questions:
                         q_id_str = str(q.get("id") or q.get("question")).strip()
                         q_type = str(q.get("type", "MCQ")).upper()
-                        q_marks = 1.0 if q_type == "MCQ" else (float(q.get("marks") or 10.0) if q_type in {"CODING", "PYTHON_CODING"} else 10.0)
+                        q_marks = 1.0 if q_type == "MCQ" else float(q.get("marks") or 5.0)
                         tot_max += q_marks
                         
                         a_obj = answers_map.get(q_id_str)
@@ -941,7 +941,7 @@ async def submit_assessment(
 
         # 3. SQL Scenario-Based Questions (SQL PIPELINE ONLY)
         elif q_subject in {"SQL"} or "SQL" in q_subject or q_type in {"SQL", "SQL_CODING"}:
-            q_marks = float(q.get("marks") or 10.0)
+            q_marks = float(q.get("marks") or 5.0)
             max_marks += q_marks
 
             sql_res = await evaluate_sql_question(cand_ans, q, q_marks=q_marks)
@@ -966,7 +966,7 @@ async def submit_assessment(
 
         # 4. Python Scenario-Based Questions (PYTHON PIPELINE ONLY)
         elif is_coding_scenario:
-            q_marks = float(q.get("marks") or 10.0)
+            q_marks = float(q.get("marks") or 5.0)
             max_marks += q_marks
 
             eval_res = await evaluate_python_coding_submission_async(
@@ -997,7 +997,8 @@ async def submit_assessment(
 
         # 5. Generic Descriptive Scenario Fallback
         else:
-            max_marks += 10.0
+            q_marks = float(q.get("marks") or 5.0)
+            max_marks += q_marks
             if not cand_ans:
                 unanswered_questions += 1
                 feedback = "Unanswered."
@@ -1007,9 +1008,8 @@ async def submit_assessment(
                 status_val = "Correct"
                 is_correct = True
                 correct_answers += 1
-                marks_awarded = 10.0
+                marks_awarded = q_marks
                 similarity_score = 100
-                feedback = "Scenario answer submitted successfully."
                 feedback = "Scenario answer submitted successfully. AI evaluation processing."
                 strengths = "Submitted detailed response."
 
@@ -1097,7 +1097,7 @@ async def submit_assessment(
     for db_ans in db_answers:
         orig_q = next((q for q in questions if (q.get("id") or q.get("question")) == db_ans.question_id), {})
         q_type = orig_q.get("type", "MCQ")
-        q_marks = 1.0 if q_type == "MCQ" else (float(orig_q.get("marks") or 10.0) if q_type in {"CODING", "PYTHON_CODING"} else 10.0)
+        q_marks = 1.0 if q_type == "MCQ" else float(orig_q.get("marks") or 5.0)
 
         analysis_list.append(
             QuestionAnalysis(
@@ -1304,7 +1304,7 @@ async def evaluate_assignment(
 
         # 3. SQL Scenario-Based Questions (SQL PIPELINE ONLY)
         elif q_subject in {"SQL"} or "SQL" in q_subject or q_type in {"SQL", "SQL_CODING"}:
-            q_marks = float(q.get("marks") or 10.0)
+            q_marks = float(q.get("marks") or 5.0)
             max_marks += q_marks
 
             sql_res = await evaluate_sql_question(cand_ans, q, q_marks=q_marks)
@@ -1329,7 +1329,7 @@ async def evaluate_assignment(
 
         # 4. Python Scenario-Based Questions (PYTHON PIPELINE ONLY)
         elif is_coding_scenario:
-            q_marks = float(q.get("marks") or 10.0)
+            q_marks = float(q.get("marks") or 5.0)
             max_marks += q_marks
 
             eval_res = evaluate_python_coding_submission(cand_ans, q, q_marks=q_marks, code_executor=code_executor)
@@ -1352,7 +1352,8 @@ async def evaluate_assignment(
             else:
                 wrong_answers += 1
         else:
-            max_marks += 10.0
+            q_marks = float(q.get("marks") or 5.0)
+            max_marks += q_marks
             if not cand_ans:
                 unanswered_questions += 1
                 feedback = "Unanswered."
@@ -1368,7 +1369,7 @@ async def evaluate_assignment(
                     strengths = eval_res.get("strengths", "")
                     missing_points = eval_res.get("missing_points", "")
                     suggested_improvement = eval_res.get("suggested_improvement", eval_res.get("improvements", ""))
-                    marks_awarded = float(score) / 10.0
+                    marks_awarded = round((float(score) / 100.0) * q_marks, 2)
                     
                     if status_val == "Correct":
                         correct_answers += 1
@@ -1517,7 +1518,7 @@ async def evaluate_assignment(
         ans_obj = answers_map.get(str(q_id))
         cand_ans = ans_obj.candidate_answer if ans_obj else ""
         q_type = q.get("type", "MCQ")
-        q_marks = 1.0 if q_type == "MCQ" else (float(q.get("marks") or 10.0) if q_type in {"CODING", "PYTHON_CODING"} else 10.0)
+        q_marks = 1.0 if q_type == "MCQ" else float(q.get("marks") or 5.0)
         
         analysis_list.append(
             QuestionAnalysis(
@@ -1665,11 +1666,11 @@ async def get_result(
                 question_text = str(q.get("question") or q.get("problemStatement") or q.get("scenario") or f"Question {idx+1}")
                 q_type = str(q.get("type") or q.get("questionType") or "MCQ")
                 correct_opt = str(q.get("correctAnswer") or q.get("expectedAnswer") or q.get("expected_answer") or "")
-                q_marks_raw = q.get("marks", 1.0 if q_type.upper() in {"MCQ", "MULTIPLE_CHOICE"} else 10.0)
+                q_marks_raw = q.get("marks", 1.0 if q_type.upper() in {"MCQ", "MULTIPLE_CHOICE"} else 5.0)
                 try:
                     q_marks = float(q_marks_raw)
                 except (ValueError, TypeError):
-                    q_marks = 1.0 if q_type.upper() in {"MCQ", "MULTIPLE_CHOICE"} else 10.0
+                    q_marks = 1.0 if q_type.upper() in {"MCQ", "MULTIPLE_CHOICE"} else 5.0
             
             ans_obj = answers_map.get(q_id_str)
             cand_ans = str(ans_obj.candidate_answer) if (ans_obj and ans_obj.candidate_answer is not None) else ""

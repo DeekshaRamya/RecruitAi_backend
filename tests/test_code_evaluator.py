@@ -47,7 +47,7 @@ def test_evaluation_case1_not_attempted():
         "visibleTestCases": [{"input": "2\n3", "expectedOutput": "5"}]
     }
     cand_ans = "def solution(a, b):\n    pass"
-    res = evaluate_python_coding_submission(cand_ans, q, q_marks=10.0)
+    res = evaluate_python_coding_submission(cand_ans, q, q_marks=5.0)
     assert res["status"] == "NOT ATTEMPTED"
     assert res["marks_awarded"] == 0.0
     assert res["similarity_score"] == 0
@@ -60,7 +60,7 @@ def test_evaluation_case2_all_tests_failed():
         "visibleTestCases": [{"input": "2\n3", "expectedOutput": "5"}]
     }
     cand_ans = "def solution(a, b):\n    return a * b"  # returns 6 instead of 5
-    res = evaluate_python_coding_submission(cand_ans, q, q_marks=10.0)
+    res = evaluate_python_coding_submission(cand_ans, q, q_marks=5.0)
     assert res["status"] == "FAILED"
     assert res["marks_awarded"] == 0.0
     assert res["similarity_score"] == 0
@@ -77,7 +77,7 @@ def test_evaluation_case3_hardcoded_if_else():
     }
     # Candidate logic attempts hardcoded check for num == 2
     cand_ans = "def solution(num):\n    return 'EVEN' if num == 2 else 'WRONG'"
-    res = evaluate_python_coding_submission(cand_ans, q, q_marks=10.0)
+    res = evaluate_python_coding_submission(cand_ans, q, q_marks=5.0)
     assert res["status"] == "FAILED"
     assert res["marks_awarded"] == 0.0
     assert res["similarity_score"] == 0
@@ -90,9 +90,9 @@ def test_evaluation_case4_full_marks():
         "hiddenTestCases": [{"input": "world\n2", "expectedOutput": "wo"}]
     }
     cand_ans = "def solution(text, k):\n    return text[:k]"
-    res = evaluate_python_coding_submission(cand_ans, q, q_marks=10.0)
+    res = evaluate_python_coding_submission(cand_ans, q, q_marks=5.0)
     assert res["status"] in ("PASSED", "Correct")
-    assert res["marks_awarded"] == 10.0
+    assert res["marks_awarded"] == 5.0
     assert res["similarity_score"] == 100
     assert res["is_correct"] is True
     assert res["passed_test_cases"] == 2
@@ -107,9 +107,9 @@ def test_evaluation_print_only_solution():
     cand_ans = """def solution(numbers, target):
     c = numbers.count(target)
     print(c)"""
-    res = evaluate_python_coding_submission(cand_ans, q, q_marks=10.0)
+    res = evaluate_python_coding_submission(cand_ans, q, q_marks=5.0)
     assert res["status"] in ("PASSED", "Correct")
-    assert res["marks_awarded"] == 10.0
+    assert res["marks_awarded"] == 5.0
     assert res["similarity_score"] == 100
     assert res["is_correct"] is True
 

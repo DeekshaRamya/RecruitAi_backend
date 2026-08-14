@@ -74,9 +74,9 @@ def test_evaluate_sql_question_successful_execution_and_dataset_match():
 
     with patch("app.services.sql_scenario_service.SqlScenarioService.execute_sql_via_api", new_callable=AsyncMock) as mock_exec:
         mock_exec.return_value = mock_success_exec
-        res = asyncio.run(evaluate_sql_question(cand_ans, q, q_marks=10.0))
+        res = asyncio.run(evaluate_sql_question(cand_ans, q, q_marks=5.0))
 
         assert res["status"] == "Correct"
-        assert res["marks_awarded"] == 10.0
+        assert res["marks_awarded"] == 5.0
         assert res["similarity_score"] == 100
         assert "Passed all 1/1 dataset test cases" in res["feedback"]

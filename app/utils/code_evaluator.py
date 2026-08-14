@@ -294,7 +294,7 @@ def collect_all_test_cases(q: Dict[str, Any]) -> List[Dict[str, Any]]:
 async def evaluate_python_coding_submission_async(
     cand_ans: str,
     q: Dict[str, Any],
-    q_marks: float = 10.0,
+    q_marks: float = 5.0,
     code_executor = None,
     ai_service = None
 ) -> Dict[str, Any]:
@@ -460,7 +460,7 @@ async def evaluate_python_coding_submission_async(
 def evaluate_python_coding_submission(
     cand_ans: str,
     q: Dict[str, Any],
-    q_marks: float = 10.0,
+    q_marks: float = 5.0,
     code_executor = None,
     ai_service = None
 ) -> Dict[str, Any]:

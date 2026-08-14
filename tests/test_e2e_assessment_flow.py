@@ -146,7 +146,7 @@ async def test_e2e_assessment_flow(client):
         result_data = res_submit.json()
 
         # Final Score verification (Feature 7)
-        # MCQ (1/1 marks) + Scenario (9/10 marks based on 90 score) = 10.0 / 11.0 total max marks.
+        # MCQ (1/1 marks) + Scenario (4.5/5 marks based on 90 score) = 5.5 / 6.0 total max marks.
         assert result_data["totalQuestions"] == 2
         assert result_data["correctAnswers"] == 2
         assert result_data["percentage"] > 80.0

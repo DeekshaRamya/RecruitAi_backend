@@ -26,7 +26,7 @@ class QuestionAnalysis(BaseModel):
     candidateAnswer: Optional[str] = ""
     correctAnswer: Optional[str] = ""
     marksAwarded: Optional[float] = 0.0
-    maxMarks: Optional[float] = 10.0
+    maxMarks: Optional[float] = 5.0
     status: Optional[str] = "Incorrect"  # "Correct", "Incorrect", "Partially Correct"
     feedback: Optional[str] = None
     strengths: Optional[str] = None

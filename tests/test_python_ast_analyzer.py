@@ -82,7 +82,7 @@ def test_evaluation_pipeline_hardcoded_submission_rejected():
     cand_ans = """def solution(text, k):
     return "hel" """
     
-    res = evaluate_python_coding_submission(cand_ans, q, q_marks=10.0)
+    res = evaluate_python_coding_submission(cand_ans, q, q_marks=5.0)
     assert res["status"] == "FAILED"
     assert res["marks_awarded"] == 0.0
     assert res["similarity_score"] == 0
@@ -98,8 +98,8 @@ def test_evaluation_pipeline_genuine_submission_passed():
     cand_ans = """def solution(text, k):
     return text[:k] """
     
-    res = evaluate_python_coding_submission(cand_ans, q, q_marks=10.0)
+    res = evaluate_python_coding_submission(cand_ans, q, q_marks=5.0)
     assert res["status"] == "PASSED"
-    assert res["marks_awarded"] == 10.0
+    assert res["marks_awarded"] == 5.0
     assert res["similarity_score"] == 100
     assert res["is_correct"] is True
