@@ -27,6 +27,12 @@ from app.api.english_assessment import router as english_assessment_router
 
 
 
+from app.database.migrations import (
+    run_schema_migrations,
+    is_schema_up_to_date,
+    check_tables_exist
+)
+
 # Setup Logging
 logging.basicConfig(
     level=logging.INFO,
@@ -34,212 +40,11 @@ logging.basicConfig(
 )
 logger = logging.getLogger("recruitai-backend")
 
-async def check_postgresql_locks(conn):
-    """
-    Checks for active locks or blocking transactions on target tables in PostgreSQL.
-    """
-    try:
-        lock_query = text("""
-            SELECT 
-                a.pid, 
-                a.usename, 
-                a.state, 
-                a.query, 
-                l.mode, 
-                l.granted
-            FROM pg_locks l
-            JOIN pg_stat_activity a ON l.pid = a.pid
-            WHERE l.relation::regclass::text IN ('candidate_answers', 'assessment_results', 'assessments', 'assessment_assignments')
-              AND a.pid != pg_backend_pid();
-        """)
-        result = await conn.execute(lock_query)
-        locks = result.fetchall()
-        if locks:
-            logger.warning(f"⚠️ Detected {len(locks)} active PostgreSQL lock(s) on target tables:")
-            for lock in locks:
-                logger.warning(f"   - PID {lock.pid} ({lock.usename}) [{lock.state}]: '{lock.query}' | Lock mode: {lock.mode} (Granted: {lock.granted})")
-        else:
-            logger.info("No blocking PostgreSQL locks detected on target tables.")
-    except Exception as e:
-        logger.debug(f"Lock check skipped or non-applicable: {e}")
-
-async def terminate_blocking_locks(conn):
-    """
-    Detects and terminates non-system PostgreSQL sessions holding locks on target tables
-    that block migration execution.
-    """
-    try:
-        terminate_query = text("""
-            SELECT pg_terminate_backend(a.pid), a.pid, a.usename, a.state, a.query
-            FROM pg_locks l
-            JOIN pg_stat_activity a ON l.pid = a.pid
-            WHERE l.relation::regclass::text IN ('candidate_answers', 'assessment_results', 'assessments', 'assessment_assignments')
-              AND a.pid != pg_backend_pid()
-              AND a.state IN ('idle in transaction', 'idle in transaction (aborted)', 'active');
-        """)
-        result = await conn.execute(terminate_query)
-        terminated = result.fetchall()
-        if terminated:
-            for item in terminated:
-                logger.warning(f"⚠️ Terminated blocking PostgreSQL PID {item[1]} ({item[2]}) [{item[3]}]: '{item[4]}'")
-        else:
-            logger.info("No blocking lock sessions found to terminate.")
-    except Exception as e:
-        logger.debug(f"Could not terminate blocking locks: {e}")
-
-async def run_schema_migrations(target_engine):
-    """
-    Executes schema migrations (ALTER TABLE, UPDATE, DO blocks) safely with lock checks,
-    per-statement timeouts, isolated transactions, traceback logging, and error resilience.
-    """
-    logger.info("Running schema migrations (ALTER TABLE)...")
-    
-    migrations = [
-        (
-            "Add assessment_id column to candidate_answers",
-            "ALTER TABLE candidate_answers ADD COLUMN IF NOT EXISTS assessment_id UUID;"
-        ),
-        (
-            "Alter question_id column type to VARCHAR(4000) in candidate_answers",
-            "ALTER TABLE candidate_answers ALTER COLUMN question_id TYPE VARCHAR(4000);"
-        ),
-        (
-            "Backfill assessment_id in candidate_answers from assessment_assignments",
-            """
-            UPDATE candidate_answers ca
-            SET assessment_id = aa.assessment_id
-            FROM assessment_assignments aa
-            WHERE ca.assignment_id = aa.id AND ca.assessment_id IS NULL;
-            """
-        ),
-        (
-            "Add foreign key constraint fk_candidate_answers_assessment",
-            """
-            DO $$
-            BEGIN
-                IF NOT EXISTS (SELECT 1 FROM information_schema.table_constraints WHERE constraint_name = 'fk_candidate_answers_assessment') THEN
-                    ALTER TABLE candidate_answers ADD CONSTRAINT fk_candidate_answers_assessment FOREIGN KEY (assessment_id) REFERENCES assessments(id) ON DELETE CASCADE;
-                END IF;
-            END $$;
-            """
-        ),
-        (
-            "Add overall_feedback column to assessment_results",
-            "ALTER TABLE assessment_results ADD COLUMN IF NOT EXISTS overall_feedback VARCHAR(4000);"
-        ),
-        (
-            "Add overall_strengths column to assessment_results",
-            "ALTER TABLE assessment_results ADD COLUMN IF NOT EXISTS overall_strengths VARCHAR(4000);"
-        ),
-        (
-            "Add overall_weaknesses column to assessment_results",
-            "ALTER TABLE assessment_results ADD COLUMN IF NOT EXISTS overall_weaknesses VARCHAR(4000);"
-        ),
-        (
-            "Add hiring_recommendation column to assessment_results",
-            "ALTER TABLE assessment_results ADD COLUMN IF NOT EXISTS hiring_recommendation VARCHAR(255);"
-        ),
-        (
-            "Add auto_submitted column to assessment_results",
-            "ALTER TABLE assessment_results ADD COLUMN IF NOT EXISTS auto_submitted BOOLEAN DEFAULT FALSE;"
-        ),
-        (
-            "Add submission_reason column to assessment_results",
-            "ALTER TABLE assessment_results ADD COLUMN IF NOT EXISTS submission_reason VARCHAR(1000);"
-        ),
-        (
-            "Add warning_count column to assessment_results",
-            "ALTER TABLE assessment_results ADD COLUMN IF NOT EXISTS warning_count INTEGER DEFAULT 0;"
-        ),
-        (
-            "Add warning_history column to assessment_results",
-            "ALTER TABLE assessment_results ADD COLUMN IF NOT EXISTS warning_history JSON;"
-        ),
-        (
-            "Add passed_test_cases column to candidate_answers",
-            "ALTER TABLE candidate_answers ADD COLUMN IF NOT EXISTS passed_test_cases INTEGER;"
-        ),
-        (
-            "Add failed_test_cases column to candidate_answers",
-            "ALTER TABLE candidate_answers ADD COLUMN IF NOT EXISTS failed_test_cases INTEGER;"
-        ),
-        (
-            "Add run_time column to candidate_answers",
-            "ALTER TABLE candidate_answers ADD COLUMN IF NOT EXISTS run_time DOUBLE PRECISION;"
-        ),
-        (
-            "Add code_output column to candidate_answers",
-            "ALTER TABLE candidate_answers ADD COLUMN IF NOT EXISTS code_output VARCHAR(4000);"
-        ),
-        (
-            "Add test_results column to candidate_answers",
-            "ALTER TABLE candidate_answers ADD COLUMN IF NOT EXISTS test_results JSON;"
-        ),
-    ]
-
-    is_postgres = target_engine.dialect.name == "postgresql"
-
-    # Check for active PostgreSQL locks before starting migrations
-    if is_postgres:
-        try:
-            async with target_engine.connect() as check_conn:
-                await check_postgresql_locks(check_conn)
-        except Exception as lock_err:
-            logger.warning(f"Could not perform pre-migration lock check: {lock_err}")
-
-    success_count = 0
-    failure_count = 0
-    total_steps = len(migrations)
-
-    for step, (desc, sql_stmt) in enumerate(migrations, 1):
-        logger.info(f"Migration [{step}/{total_steps}] Starting: '{desc}'...")
-        max_retries = 3
-        for attempt in range(1, max_retries + 1):
-            try:
-                # Execute each migration statement in an isolated transaction block
-                async with target_engine.begin() as conn:
-                    if is_postgres:
-                        # Set short lock_timeout (5s) and statement_timeout (10s) to prevent hanging indefinitely
-                        await conn.execute(text("SET LOCAL lock_timeout = '5s';"))
-                        await conn.execute(text("SET LOCAL statement_timeout = '10s';"))
-                    
-                    # Execute migration step with asyncio timeout as extra safety barrier
-                    await asyncio.wait_for(conn.execute(text(sql_stmt)), timeout=10.0)
-                    
-                logger.info(f"Migration [{step}/{total_steps}] Completed successfully: '{desc}'.")
-                success_count += 1
-                break
-            except Exception as exc:
-                is_lock_error = "LockNotAvailable" in str(exc) or "lock timeout" in str(exc).lower()
-                if attempt < max_retries and is_postgres and is_lock_error:
-                    logger.warning(
-                        f"⚠️ Migration [{step}/{total_steps}] Attempt {attempt}/{max_retries} hit lock timeout for '{desc}'. "
-                        "Attempting to terminate blocking database sessions and retrying..."
-                    )
-                    try:
-                        async with target_engine.connect() as term_conn:
-                            await terminate_blocking_locks(term_conn)
-                    except Exception as t_err:
-                        logger.debug(f"Failed to clear blocking sessions: {t_err}")
-                    await asyncio.sleep(1.0)
-                else:
-                    failure_count += 1
-                    logger.error(
-                        f"🚨 Migration [{step}/{total_steps}] Failed for '{desc}': {exc}",
-                        exc_info=True
-                    )
-                    logger.warning(f"Continuing with remaining migrations despite failure in step {step}.")
-                    break
-
-    if failure_count == 0:
-        logger.info("Database migrations completed successfully.")
-    else:
-        logger.warning(f"Database migrations completed with warnings: {success_count}/{total_steps} succeeded, {failure_count} failed.")
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """
-    FastAPI Lifespan handler. Handles database table creation and diagnostics asynchronously on startup.
+    FastAPI Lifespan handler. Performs lightweight database connectivity check
+    and conditionally initializes schema/migrations only if necessary.
     """
     if sys.platform == "win32":
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
@@ -265,9 +70,9 @@ async def lifespan(app: FastAPI):
     logger.info(f"SQLAlchemy Discovered Tables ({len(table_names)}): {table_names}")
 
     try:
-        # 2. Get connection metadata (database and schema) with retries
+        # 2. Fast connection check (up to 2 quick attempts)
         connected = False
-        for attempt in range(1, 6):
+        for attempt in range(1, 3):
             try:
                 async with engine.connect() as conn:
                     db_name_result = await conn.execute(text("SELECT current_database()"))
@@ -280,8 +85,11 @@ async def lifespan(app: FastAPI):
                     connected = True
                     break
             except Exception as conn_err:
-                logger.warning(f"Database connection attempt {attempt}/5 failed: {conn_err}. Retrying in 3s...")
-                await asyncio.sleep(3)
+                if attempt < 2:
+                    logger.warning(f"Database connection attempt {attempt}/2 failed: {conn_err}. Retrying in 1s...")
+                    await asyncio.sleep(1)
+                else:
+                    logger.warning(f"Database connection attempt failed: {conn_err}")
 
         if not connected:
             from app.database.database import use_fallback_sqlite
@@ -290,39 +98,35 @@ async def lifespan(app: FastAPI):
                 await conn.run_sync(Base.metadata.create_all)
             logger.info("Fallback SQLite database initialized successfully.")
         else:
-            # 3. Create tables
-            logger.info("Executing Base.metadata.create_all() on primary database...")
-            async with engine.begin() as conn:
-                await conn.run_sync(Base.metadata.create_all)
-            logger.info("CREATE TABLE statements executed successfully.")
-
-            # 3.1 Migration: Run ALTER TABLE commands to add new columns to existing tables if they don't exist
-            try:
-                await asyncio.wait_for(run_schema_migrations(engine), timeout=60.0)
-            except Exception as mig_err:
-                logger.error(f"🚨 Schema migration process failed or timed out: {mig_err}", exc_info=True)
-                logger.warning("Continuing application startup despite migration warning.")
-
-            # 4. Verify table presence
+            # 3. Check if core tables exist
             async with engine.connect() as conn:
-                def get_table_names(sync_conn):
-                    from sqlalchemy import inspect
-                    inspector = inspect(sync_conn)
-                    return inspector.get_table_names()
-                
-                existing_tables = await conn.run_sync(get_table_names)
-                logger.info(f"Verified actual tables present in Database: {existing_tables}")
-                
-                expected_tables = ["users", "login_history", "assessments", "assessment_assignments", "candidate_answers", "assessment_results", "candidate_activity_logs"]
-                missing_tables = [t for t in expected_tables if t not in existing_tables]
-                if missing_tables:
-                    logger.error(f"🚨 Missing tables in database: {missing_tables}")
-                else:
-                    logger.info("✅ All required tables successfully verified and present in PostgreSQL.")
-                    
+                has_tables = await check_tables_exist(conn)
+
+            if not has_tables:
+                logger.info("Database tables not found. Executing Base.metadata.create_all()...")
+                async with engine.begin() as conn:
+                    await conn.run_sync(Base.metadata.create_all)
+                logger.info("CREATE TABLE statements executed successfully.")
+            else:
+                logger.info("Core database tables verified.")
+
+            # 4. Fast schema check: skip expensive migrations if schema is already up-to-date
+            async with engine.connect() as conn:
+                up_to_date = await is_schema_up_to_date(conn)
+
+            if up_to_date:
+                logger.info("⚡ Database schema is up-to-date. Skipping schema migrations.")
+            else:
+                logger.info("⚠️ Outdated schema detected. Executing schema migrations...")
+                try:
+                    await asyncio.wait_for(run_schema_migrations(engine), timeout=60.0)
+                except Exception as mig_err:
+                    logger.error(f"🚨 Schema migration process failed or timed out: {mig_err}", exc_info=True)
+                    logger.warning("Continuing application startup despite migration warning.")
+
     except Exception as e:
-        logger.error(f"🚨 Primary database connection or migration failed: {e}")
-        logger.warning("⚠️ Database initialization could not be completed, but the server will continue to boot. Database operations will be tried dynamically upon client requests.")
+        logger.error(f"🚨 Primary database connection or initialization failed: {e}")
+        logger.warning("⚠️ Database initialization could not be completed, but the server will continue to boot.")
             
     logger.info("Application startup completed. RecruitAI Backend Server Started Successfully")
     yield

@@ -1,6 +1,9 @@
 import logging
 from typing import Optional
+import httpx
 from fastapi import HTTPException, status
+from azure.core.exceptions import ClientAuthenticationError, AzureError
+from openai import OpenAIError, AuthenticationError
 
 from app.schemas.assessment import (
     AssessmentGenerateRequest,
@@ -147,6 +150,19 @@ class AssessmentGenerationService:
                         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                         detail=f"Azure OpenAI Error: {e.response.text}"
                     )
+            except (ClientAuthenticationError, AuthenticationError) as e:
+                logger.error(f"Azure OpenAI authentication failed: {str(e)}")
+                last_exception = HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Azure OpenAI service authentication failed. Please configure AZURE_OPENAI_API_KEY or Azure credentials in .env."
+                )
+                raise last_exception
+            except (OpenAIError, AzureError) as e:
+                logger.warning(f"Attempt {attempt} failed: Azure OpenAI error: {str(e)}")
+                last_exception = HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=f"Azure OpenAI Error: {str(e)}"
+                )
             except ValueError as e:
                 logger.warning(f"Attempt {attempt} failed: Validation/Formatting Error: {str(e)}")
                 last_exception = HTTPException(
@@ -171,7 +187,6 @@ class AssessmentGenerationService:
         """
         from app.services.code_execution_service import CodeExecutionService
         from app.services.sql_schema_service import SqlSchemaService
-        import random
 
         executor = CodeExecutionService()
         live_schema_info = SqlSchemaService.get_live_schema()
