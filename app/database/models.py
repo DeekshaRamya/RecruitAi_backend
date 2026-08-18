@@ -6,8 +6,9 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.database.database import Base
 
 class UserRole(str, enum.Enum):
-    CANDIDATE = "candidate"
+    ADMIN = "admin"
     RECRUITER = "recruiter"
+    CANDIDATE = "candidate"
 
 class User(Base):
     __tablename__ = "users"
@@ -29,8 +30,8 @@ class User(Base):
     # Optional phone number
     phone: Mapped[str | None] = mapped_column(String(50), nullable=True)
     
-    # Role-Based Access (Enum)
-    role: Mapped[UserRole] = mapped_column(Enum(UserRole), nullable=False)
+    # Role-Based Access (Enum) - Defaults to candidate
+    role: Mapped[UserRole] = mapped_column(Enum(UserRole), default=UserRole.CANDIDATE, nullable=False)
     
     # Microsoft Identity (Nullable, only used for recruiters)
     microsoft_id: Mapped[str | None] = mapped_column(String(255), unique=True, index=True, nullable=True)
@@ -505,3 +506,63 @@ class EnglishInterviewConversation(Base):
 
     # Relationships
     interview = relationship("EnglishInterview", back_populates="conversations")
+
+
+class CandidateGroup(Base):
+    __tablename__ = "candidate_groups"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4
+    )
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    description: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    created_by: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False
+    )
+
+    # Relationships
+    members = relationship("CandidateGroupMember", back_populates="group", cascade="all, delete-orphan")
+
+
+class CandidateGroupMember(Base):
+    __tablename__ = "candidate_group_members"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4
+    )
+    group_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("candidate_groups.id", ondelete="CASCADE"),
+        nullable=False
+    )
+    candidate_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False
+    )
+    added_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False
+    )
+
+    # Relationships
+    group = relationship("CandidateGroup", back_populates="members")
+    candidate = relationship("User", foreign_keys=[candidate_id])

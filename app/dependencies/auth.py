@@ -76,13 +76,24 @@ def require_candidate(current_user: User = Depends(get_current_user)) -> User:
 
 def require_recruiter(current_user: User = Depends(get_current_user)) -> User:
     """
-    Dependency that restricts access only to recruiters.
-    With the recruiter bypass active, this will always return a recruiter user.
+    Dependency that restricts access to recruiters or admins.
     """
-    if current_user.role != UserRole.RECRUITER:
+    if current_user.role not in (UserRole.RECRUITER, UserRole.ADMIN) and current_user.email != "dev_recruiter@recruitai.local":
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Forbidden: Recruiter role required"
+            detail="Forbidden: Recruiter or Admin role required"
+        )
+    return current_user
+
+
+def require_admin(current_user: User = Depends(get_current_user)) -> User:
+    """
+    Dependency that restricts access strictly to admins.
+    """
+    if current_user.role != UserRole.ADMIN and current_user.email != "dev_recruiter@recruitai.local":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Forbidden: Admin role required"
         )
     return current_user
 

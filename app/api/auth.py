@@ -76,7 +76,9 @@ def microsoft_login():
 )
 async def microsoft_callback(
     fastapi_request: Request,
-    code: str = Query(..., description="Authorization code from Microsoft"),
+    code: str = Query(None, description="Authorization code from Microsoft"),
+    error: str = Query(None, description="OAuth error code if any"),
+    error_description: str = Query(None, description="OAuth error description if any"),
     db: AsyncSession = Depends(get_db),
     redirect: bool = Query(False, description="If True, redirects to frontend dashboard with tokens in query params")
 ):
@@ -84,18 +86,42 @@ async def microsoft_callback(
     Handles the Microsoft OAuth callback, exchanges the code for tokens, retrieves profile,
     and automatically registers or logs in the recruiter user.
     """
+    import urllib.parse
+    from fastapi import HTTPException
+
+    if error or not code:
+        err_msg = urllib.parse.quote(error_description or error or "Authentication cancelled or failed")
+        if redirect:
+            return RedirectResponse(url=f"{settings.FRONTEND_URL}/login?error={err_msg}")
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=error_description or error or "Missing auth code")
+
     ip_address = fastapi_request.client.host if fastapi_request.client else None
     device = fastapi_request.headers.get("user-agent")
     
-    token_response = await AuthService.authenticate_microsoft_user(code, db, ip_address=ip_address, device=device)
+    try:
+        token_response = await AuthService.authenticate_microsoft_user(code, db, ip_address=ip_address, device=device)
+    except Exception as e:
+        if redirect:
+            detail = getattr(e, "detail", str(e))
+            err_msg = urllib.parse.quote(str(detail))
+            return RedirectResponse(url=f"{settings.FRONTEND_URL}/login?error={err_msg}")
+        raise
     
     if redirect:
+        encoded_name = urllib.parse.quote(token_response.user.full_name or "")
+        encoded_email = urllib.parse.quote(token_response.user.email or "")
+        user_json = urllib.parse.quote(token_response.user.model_dump_json())
         redirect_url = (
             f"{settings.FRONTEND_URL}/oauth/callback?"
+            f"token={token_response.access_token}&"
             f"access_token={token_response.access_token}&"
             f"refresh_token={token_response.refresh_token}&"
             f"role={token_response.role.value}&"
-            f"redirect={token_response.redirect}"
+            f"redirect={token_response.redirect}&"
+            f"name={encoded_name}&"
+            f"email={encoded_email}&"
+            f"user_id={token_response.user.id}&"
+            f"user={user_json}"
         )
         return RedirectResponse(url=redirect_url)
         

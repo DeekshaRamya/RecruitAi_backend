@@ -114,6 +114,24 @@ async def run_schema_migrations(target_engine):
     
     migrations = [
         (
+            "Add admin value to userrole enum if exists",
+            """
+            DO $$
+            BEGIN
+                IF EXISTS (SELECT 1 FROM pg_type WHERE typname = 'userrole') THEN
+                    BEGIN
+                        ALTER TYPE userrole ADD VALUE IF NOT EXISTS 'admin';
+                    EXCEPTION WHEN duplicate_object THEN NULL;
+                    END;
+                    BEGIN
+                        ALTER TYPE userrole ADD VALUE IF NOT EXISTS 'ADMIN';
+                    EXCEPTION WHEN duplicate_object THEN NULL;
+                    END;
+                END IF;
+            END $$;
+            """
+        ),
+        (
             "Add assessment_id column to candidate_answers",
             "ALTER TABLE candidate_answers ADD COLUMN IF NOT EXISTS assessment_id UUID;"
         ),
@@ -192,6 +210,31 @@ async def run_schema_migrations(target_engine):
         (
             "Add test_results column to candidate_answers",
             "ALTER TABLE candidate_answers ADD COLUMN IF NOT EXISTS test_results JSON;"
+        ),
+        (
+            "Create candidate_groups table",
+            """
+            CREATE TABLE IF NOT EXISTS candidate_groups (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                name VARCHAR(255) NOT NULL,
+                description VARCHAR(1000),
+                created_by UUID REFERENCES users(id) ON DELETE SET NULL,
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW() NOT NULL,
+                updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW() NOT NULL
+            );
+            """
+        ),
+        (
+            "Create candidate_group_members table",
+            """
+            CREATE TABLE IF NOT EXISTS candidate_group_members (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                group_id UUID NOT NULL REFERENCES candidate_groups(id) ON DELETE CASCADE,
+                candidate_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                added_at TIMESTAMP WITH TIME ZONE DEFAULT NOW() NOT NULL,
+                CONSTRAINT uq_group_candidate UNIQUE (group_id, candidate_id)
+            );
+            """
         ),
     ]
 

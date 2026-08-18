@@ -3,7 +3,7 @@ import logging
 import sys
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, status
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.exceptions import RequestValidationError
 from app.core.config import settings
@@ -18,7 +18,7 @@ import app.database.models
 from app.api.auth import router as auth_router
 from app.api.users import router as users_router
 from app.api.candidate import router as candidate_router
-from app.api.recruiter import router as recruiter_router, candidates_router
+from app.api.recruiter import router as recruiter_router, candidates_router, groups_router
 from app.api.assessment import router as assessment_router, plural_router as assessments_plural_router
 from app.api.interview import router as interview_router
 from app.api.assignment import router as assignment_router
@@ -214,6 +214,7 @@ app.include_router(users_router)
 app.include_router(candidate_router)
 app.include_router(recruiter_router)
 app.include_router(candidates_router)
+app.include_router(groups_router)
 app.include_router(assessment_router)
 app.include_router(assessments_plural_router)
 app.include_router(assignment_router)
@@ -271,15 +272,39 @@ async def root_run_sql(payload: dict):
     return res
 
 
-# Legacy Redirect Handler mapping /auth/microsoft/callback to support local .env redirect configuration
+# Route Handlers mapping /auth/microsoft/* to support direct URLs and Azure callback configuration
+@app.get("/auth/microsoft/login", include_in_schema=False)
+def legacy_microsoft_login():
+    from app.services.auth_service import AuthService
+    return RedirectResponse(url=AuthService.get_microsoft_login_url())
+
 @app.get("/auth/microsoft/callback", include_in_schema=False)
 async def legacy_microsoft_callback(
     request: Request,
-    code: str,
+    code: str | None = None,
+    error: str | None = None,
+    error_description: str | None = None,
     redirect: bool = True
 ):
     from app.database.database import get_db
     from app.api.auth import microsoft_callback
+    from app.core.config import settings
+    import urllib.parse
     
+    if error or not code:
+        err_msg = urllib.parse.quote(error_description or error or "Authentication cancelled or failed")
+        return RedirectResponse(url=f"{settings.FRONTEND_URL}/login?error={err_msg}")
+
     async for db in get_db():
-        return await microsoft_callback(request, code, db, redirect)
+        try:
+            return await microsoft_callback(
+                fastapi_request=request,
+                code=code,
+                error=error,
+                error_description=error_description,
+                db=db,
+                redirect=redirect
+            )
+        except Exception as e:
+            err_msg = urllib.parse.quote(str(getattr(e, 'detail', str(e))))
+            return RedirectResponse(url=f"{settings.FRONTEND_URL}/login?error={err_msg}")

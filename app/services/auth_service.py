@@ -10,11 +10,14 @@ from app.schemas.auth import TokenResponse, UserResponse
 
 class AuthService:
     
-    @staticmethod
-    def get_navigation_data(role: UserRole) -> dict:
-        """Helper to get navigation redirect URL based on role."""
-        if role == UserRole.CANDIDATE:
+    @classmethod
+    def get_navigation_data(cls, role: UserRole | str) -> dict:
+        """Helper to get navigation redirect URL and role enum based on role."""
+        role_str = role.value if isinstance(role, UserRole) else str(role)
+        if role_str == UserRole.CANDIDATE.value or role == UserRole.CANDIDATE:
             return {"role": UserRole.CANDIDATE, "redirect": "/candidate/dashboard"}
+        elif role_str == UserRole.ADMIN.value or role == UserRole.ADMIN:
+            return {"role": UserRole.ADMIN, "redirect": "/recruiter/dashboard"}
         return {"role": UserRole.RECRUITER, "redirect": "/recruiter/dashboard"}
 
     @classmethod
@@ -199,33 +202,33 @@ class AuthService:
                 detail="Incomplete user profile data returned by Microsoft (missing id or email)"
             )
 
-        # 3. Lookup recruiter in the local DB. Check by microsoft_id first, then email.
+        # 3. Lookup user in the internal users table. Check by microsoft_id first, then email.
         result = await db.execute(select(User).where(User.microsoft_id == microsoft_id))
-        recruiter = result.scalar_one_or_none()
+        user = result.scalar_one_or_none()
         
         try:
-            if not recruiter:
-                # If not found by microsoft_id, check if email exists
+            if not user:
+                # If not found by microsoft_id, check if email exists in internal user table
                 result = await db.execute(select(User).where(User.email == email))
-                recruiter = result.scalar_one_or_none()
-                if recruiter:
-                    # User exists but hasn't linked Microsoft accounts
-                    # Link Microsoft ID and update role to Recruiter
-                    recruiter.microsoft_id = microsoft_id
-                    recruiter.role = UserRole.RECRUITER
+                user = result.scalar_one_or_none()
+                if user:
+                    # User exists in internal users table: link Microsoft ID and preserve their existing role
+                    user.microsoft_id = microsoft_id
+                    if not user.role:
+                        user.role = UserRole.CANDIDATE
                     await db.commit()
-                    await db.refresh(recruiter)
+                    await db.refresh(user)
                 else:
-                    # Create a new Recruiter record automatically
-                    recruiter = User(
+                    # Create a new record in internal users table with default role CANDIDATE
+                    user = User(
                         full_name=name,
                         email=email,
                         microsoft_id=microsoft_id,
-                        role=UserRole.RECRUITER
+                        role=UserRole.CANDIDATE
                     )
-                    db.add(recruiter)
+                    db.add(user)
                     await db.commit()
-                    await db.refresh(recruiter)
+                    await db.refresh(user)
         except Exception as e:
             await db.rollback()
             raise HTTPException(
@@ -235,7 +238,7 @@ class AuthService:
 
         # 4. Store login history details
         login_history = LoginHistory(
-            user_id=recruiter.id,
+            user_id=user.id,
             ip_address=ip_address,
             device=device
         )
@@ -249,14 +252,15 @@ class AuthService:
                 detail=f"Database error storing Microsoft login history: {str(e)}"
             )
 
-        # 5. Generate local JWT access & refresh tokens
-        access_token = security.create_access_token(recruiter.id, recruiter.email, recruiter.role.value)
-        refresh_token = security.create_refresh_token(recruiter.id, recruiter.email, recruiter.role.value)
+        # 5. Generate local JWT access & refresh tokens with their actual role from users table
+        user_role_str = user.role.value if isinstance(user.role, UserRole) else str(user.role)
+        access_token = security.create_access_token(user.id, user.email, user_role_str)
+        refresh_token = security.create_refresh_token(user.id, user.email, user_role_str)
 
-        nav_data = cls.get_navigation_data(recruiter.role)
+        nav_data = cls.get_navigation_data(user.role)
 
         return TokenResponse(
-            user=UserResponse.model_validate(recruiter),
+            user=UserResponse.model_validate(user),
             access_token=access_token,
             refresh_token=refresh_token,
             role=nav_data["role"],

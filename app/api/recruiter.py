@@ -8,8 +8,9 @@ from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.database.database import get_db
 from app.dependencies.auth import require_recruiter
-from app.database.models import User, UserRole, Assessment, AssessmentAssignment, EnglishInterview, AssessmentResult
+from app.database.models import User, UserRole, Assessment, AssessmentAssignment, EnglishInterview, AssessmentResult, CandidateGroup, CandidateGroupMember
 from app.schemas.auth import UserResponse
+from app.schemas.recruiter import CandidateGroupResponse, CreateCandidateGroupRequest, UpdateCandidateGroupRequest
 from app.api.assignment import check_and_update_expired_assignments
 
 router = APIRouter(prefix="/api/recruiter", tags=["Recruiter Endpoints"])
@@ -145,6 +146,14 @@ class CreateCandidateRequest(BaseModel):
     email: str
     password: str
     phone: str | None = None
+    role: str | None = None
+
+class UpdateCandidateRequest(BaseModel):
+    name: str | None = None
+    email: str | None = None
+    password: str | None = None
+    phone: str | None = None
+    role: str | None = None
 
 class BulkDeleteCandidatesRequest(BaseModel):
     candidateIds: List[uuid.UUID]
@@ -220,6 +229,63 @@ async def get_all_candidates(
     return candidates
 
 
+@candidates_router.put(
+    "/{candidate_id}",
+    summary="Update a Candidate Profile",
+    response_model=CandidateDetailResponse,
+    status_code=status.HTTP_200_OK
+)
+async def update_candidate(
+    candidate_id: uuid.UUID,
+    request: UpdateCandidateRequest,
+    current_user: User = Depends(require_recruiter),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Updates a candidate's profile information (name, email, phone, password). Access restricted to Recruiters.
+    """
+    result = await db.execute(select(User).where(User.id == candidate_id, User.role == UserRole.CANDIDATE))
+    candidate = result.scalar_one_or_none()
+    
+    if not candidate:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Candidate not found"
+        )
+    
+    if request.email:
+        clean_email = request.email.strip().lower()
+        if clean_email != candidate.email:
+            existing = await db.execute(select(User).where(func.lower(User.email) == clean_email, User.id != candidate_id))
+            if existing.scalar_one_or_none():
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Another account is already registered with this email address."
+                )
+            candidate.email = clean_email
+            
+    if request.name:
+        candidate.full_name = request.name.strip()
+        
+    if request.phone is not None:
+        candidate.phone = request.phone.strip() if request.phone else None
+        
+    if request.password:
+        candidate.password = security.get_password_hash(request.password)
+
+    try:
+        await db.commit()
+        await db.refresh(candidate)
+    except Exception as e:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to update candidate: {str(e)}"
+        )
+
+    return candidate
+
+
 @candidates_router.delete(
     "/{candidate_id}",
     summary="Delete a Candidate",
@@ -245,6 +311,34 @@ async def delete_candidate(
     await db.delete(candidate)
     await db.commit()
     return {"message": "Candidate deleted successfully", "id": str(candidate_id)}
+
+
+@candidates_router.delete(
+    "",
+    summary="Bulk Delete Candidates",
+    status_code=status.HTTP_200_OK
+)
+async def bulk_delete_candidates(
+    request: BulkDeleteCandidatesRequest,
+    current_user: User = Depends(require_recruiter),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Bulk deletes a list of candidates. Access restricted to Recruiters.
+    """
+    if not request.candidateIds:
+        return {"message": "No candidates provided", "deleted_count": 0}
+        
+    result = await db.execute(
+        select(User).where(User.id.in_(request.candidateIds), User.role == UserRole.CANDIDATE)
+    )
+    candidates_to_delete = result.scalars().all()
+    
+    for cand in candidates_to_delete:
+        await db.delete(cand)
+        
+    await db.commit()
+    return {"message": f"Successfully deleted {len(candidates_to_delete)} candidates", "deleted_count": len(candidates_to_delete)}
 
 
 @router.get(
@@ -549,3 +643,163 @@ async def bulk_delete_candidates(
         
     await db.commit()
     return {"message": f"Successfully deleted {deleted_count} candidates", "deletedCount": deleted_count}
+
+
+groups_router = APIRouter(prefix="/api/groups", tags=["Candidate Groups"])
+
+@groups_router.get(
+    "",
+    response_model=List[CandidateGroupResponse],
+    summary="Get All Candidate Groups"
+)
+async def get_all_groups(
+    current_user: User = Depends(require_recruiter),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Retrieves all candidate groups/batches with member candidate IDs.
+    """
+    result = await db.execute(
+        select(CandidateGroup).options(selectinload(CandidateGroup.members)).order_by(CandidateGroup.created_at.desc())
+    )
+    groups = result.scalars().all()
+    
+    response = []
+    for g in groups:
+        cand_ids = [m.candidate_id for m in g.members]
+        response.append(CandidateGroupResponse(
+            id=g.id,
+            name=g.name,
+            description=g.description,
+            candidateIds=cand_ids,
+            created_at=g.created_at,
+            createdAt=g.created_at,
+            updated_at=g.updated_at
+        ))
+    return response
+
+
+@groups_router.post(
+    "",
+    response_model=CandidateGroupResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Create Candidate Group"
+)
+async def create_candidate_group(
+    request: CreateCandidateGroupRequest,
+    current_user: User = Depends(require_recruiter),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Creates a new candidate group/batch and links selected candidates.
+    """
+    new_group = CandidateGroup(
+        name=request.name.strip(),
+        description=request.description.strip() if request.description else None,
+        created_by=current_user.id
+    )
+    db.add(new_group)
+    await db.flush()
+
+    if request.candidateIds:
+        for cand_id in set(request.candidateIds):
+            member = CandidateGroupMember(group_id=new_group.id, candidate_id=cand_id)
+            db.add(member)
+
+    await db.commit()
+    await db.refresh(new_group)
+
+    result = await db.execute(
+        select(CandidateGroup).options(selectinload(CandidateGroup.members)).where(CandidateGroup.id == new_group.id)
+    )
+    saved_group = result.scalar_one()
+
+    return CandidateGroupResponse(
+        id=saved_group.id,
+        name=saved_group.name,
+        description=saved_group.description,
+        candidateIds=[m.candidate_id for m in saved_group.members],
+        created_at=saved_group.created_at,
+        createdAt=saved_group.created_at,
+        updated_at=saved_group.updated_at
+    )
+
+
+@groups_router.put(
+    "/{group_id}",
+    response_model=CandidateGroupResponse,
+    summary="Update Candidate Group"
+)
+async def update_candidate_group(
+    group_id: uuid.UUID,
+    request: UpdateCandidateGroupRequest,
+    current_user: User = Depends(require_recruiter),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Updates a candidate group/batch (name, description, members).
+    """
+    result = await db.execute(
+        select(CandidateGroup).options(selectinload(CandidateGroup.members)).where(CandidateGroup.id == group_id)
+    )
+    group = result.scalar_one_or_none()
+    if not group:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Group not found")
+
+    if request.name is not None:
+        group.name = request.name.strip()
+    if request.description is not None:
+        group.description = request.description.strip() if request.description else None
+
+    if request.candidateIds is not None:
+        existing_members_res = await db.execute(
+            select(CandidateGroupMember).where(CandidateGroupMember.group_id == group_id)
+        )
+        for m in existing_members_res.scalars().all():
+            await db.delete(m)
+
+        for cand_id in set(request.candidateIds):
+            member = CandidateGroupMember(group_id=group_id, candidate_id=cand_id)
+            db.add(member)
+
+    await db.commit()
+    await db.refresh(group)
+
+    result = await db.execute(
+        select(CandidateGroup).options(selectinload(CandidateGroup.members)).where(CandidateGroup.id == group_id)
+    )
+    updated_group = result.scalar_one()
+
+    return CandidateGroupResponse(
+        id=updated_group.id,
+        name=updated_group.name,
+        description=updated_group.description,
+        candidateIds=[m.candidate_id for m in updated_group.members],
+        created_at=updated_group.created_at,
+        createdAt=updated_group.created_at,
+        updated_at=updated_group.updated_at
+    )
+
+
+@groups_router.delete(
+    "/{group_id}",
+    status_code=status.HTTP_200_OK,
+    summary="Delete Candidate Group"
+)
+async def delete_candidate_group(
+    group_id: uuid.UUID,
+    current_user: User = Depends(require_recruiter),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Deletes a candidate group/batch. Members mapping is deleted via CASCADE.
+    """
+    result = await db.execute(select(CandidateGroup).where(CandidateGroup.id == group_id))
+    group = result.scalar_one_or_none()
+    if not group:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Group not found")
+
+    await db.delete(group)
+    await db.commit()
+    return {"message": "Group deleted successfully", "id": str(group_id)}
+

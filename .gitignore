@@ -105,3 +105,4 @@ active_env/
 
 # Local configuration
 .env
+.venv/
