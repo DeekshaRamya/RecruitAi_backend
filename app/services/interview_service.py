@@ -104,7 +104,12 @@ class InterviewService:
                 )
 
         logger.error(f"All {max_attempts} interview scenario generation attempts failed.")
-        raise last_exception
+        if last_exception:
+            raise last_exception
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to generate interview scenarios after multiple attempts."
+        )
 
     async def evaluate_answer(self, request: InterviewEvaluateRequest) -> InterviewEvaluateResponse:
         """
@@ -188,5 +193,10 @@ class InterviewService:
                 )
 
         logger.error(f"All {max_attempts} interview answer evaluation attempts failed.")
-        raise last_exception
+        if last_exception:
+            raise last_exception
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to evaluate interview answer after multiple attempts."
+        )
 

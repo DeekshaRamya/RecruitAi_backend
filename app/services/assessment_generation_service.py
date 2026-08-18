@@ -177,7 +177,12 @@ class AssessmentGenerationService:
                 )
 
         logger.error(f"All {max_attempts} question generation attempts failed.")
-        raise last_exception
+        if last_exception:
+            raise last_exception
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to generate assessment questions after multiple attempts."
+        )
 
     def _enrich_and_verify_sql_questions(self, questions: list) -> list:
         """
@@ -299,3 +304,102 @@ class AssessmentGenerationService:
         except Exception as e:
             logger.warning(f"Could not fetch existing assessment questions for exclusion: {e}")
             return []
+
+    async def stream_assessment_generation(self, request: AssessmentGenerateRequest):
+        """
+        Streams assessment generation in real-time using Server-Sent Events (SSE).
+        Generates in fast micro-batches (2-3 questions per chunk) and streams each
+        validated question immediately to the UI as it completes.
+        """
+        import json
+        import asyncio
+
+        subjects_str = ", ".join(request.subjects)
+        logger.info(f"[SSE Stream] Starting real-time granular streaming generation for: {subjects_str}")
+
+        try:
+            yield f"event: status\ndata: {json.dumps({'message': f'Connecting to AI engine for {subjects_str}...', 'stage': 'init'})}\n\n"
+            await asyncio.sleep(0.01)
+
+            existing_questions = await self._fetch_existing_questions()
+            accumulated_questions = []
+
+            total_needed = request.totalQuestions or (5 if len(request.subjects) == 1 else 10)
+            has_sql = any(s.upper() == "SQL" for s in request.subjects)
+            scenario_pct = request.questionDistribution.scenario
+
+            # Calculate SQL scenario vs MCQ count
+            sql_scenario_count = 0
+            if has_sql and scenario_pct > 0:
+                if len(request.subjects) == 1:
+                    sql_scenario_count = max(1, round(total_needed * scenario_pct / 100.0))
+                else:
+                    sql_scenario_count = max(1, round((total_needed / len(request.subjects)) * scenario_pct / 100.0))
+
+            # 1. Stream SQL scenarios if needed (validated against live DB)
+            if sql_scenario_count > 0:
+                yield f"event: status\ndata: {json.dumps({'message': f'Generating and verifying SQL Scenario tasks against database...', 'stage': 'sql_scenarios'})}\n\n"
+                sql_scenarios = await self.sql_scenario_service.generate_sql_scenarios(
+                    count=sql_scenario_count,
+                    difficulty_distribution=request.difficultyDistribution,
+                    existing_questions=existing_questions + [str(q.get('question', '')) for q in accumulated_questions]
+                )
+                for q in sql_scenarios:
+                    q_copy = dict(q)
+                    q_copy["id"] = len(accumulated_questions) + 1
+                    accumulated_questions.append(q_copy)
+                    yield f"event: question\ndata: {json.dumps(q_copy)}\n\n"
+                    await asyncio.sleep(0.02)
+
+            # 2. Stream remaining questions in fast micro-batches (chunk size: 2-3)
+            remaining_needed = total_needed - len(accumulated_questions)
+            if remaining_needed > 0:
+                chunk_size = 2 if remaining_needed <= 6 else 3
+                num_chunks = (remaining_needed + chunk_size - 1) // chunk_size
+
+                for chunk_idx in range(num_chunks):
+                    current_chunk_count = min(chunk_size, remaining_needed - (chunk_idx * chunk_size))
+                    if current_chunk_count <= 0:
+                        break
+
+                    yield f"event: status\ndata: {json.dumps({'message': f'AI generating question batch {chunk_idx + 1}/{num_chunks}...', 'stage': 'generating_chunk', 'received': len(accumulated_questions), 'target': total_needed})}\n\n"
+
+                    chunk_request = request.model_copy(deep=True)
+                    chunk_request.totalQuestions = current_chunk_count
+
+                    # If SQL only and scenarios were already generated, remaining must be MCQ
+                    if has_sql and len(request.subjects) == 1 and sql_scenario_count > 0:
+                        chunk_request.questionDistribution.mcq = 100
+                        chunk_request.questionDistribution.scenario = 0
+
+                    try:
+                        chunk_raw = await self.openai_service.generate_questions(
+                            chunk_request,
+                            existing_questions=existing_questions + [str(q.get('question') or q.get('problemStatement') or '') for q in accumulated_questions],
+                            exclude_sql_scenarios=(sql_scenario_count > 0)
+                        )
+
+                        enriched_chunk = self._enrich_and_verify_sql_questions(chunk_raw)
+
+                        for q_data in enriched_chunk:
+                            try:
+                                validated_q = QuestionResponse(**q_data)
+                                q_dict = validated_q.model_dump()
+                                q_dict["id"] = len(accumulated_questions) + 1
+                                accumulated_questions.append(q_dict)
+                                yield f"event: question\ndata: {json.dumps(q_dict)}\n\n"
+                                await asyncio.sleep(0.02)
+                            except Exception as val_err:
+                                logger.warning(f"Error validating chunk question: {val_err}")
+                    except Exception as chunk_err:
+                        logger.warning(f"Chunk {chunk_idx + 1} generation attempt failed: {chunk_err}")
+
+            total_streamed = len(accumulated_questions)
+            logger.info(f"[SSE Stream Complete] Streamed {total_streamed} questions successfully.")
+
+            yield f"event: complete\ndata: {json.dumps({'success': True, 'totalQuestions': total_streamed, 'message': f'Successfully streamed {total_streamed} questions.'})}\n\n"
+
+        except Exception as e:
+            logger.exception(f"[SSE Stream Error] Question generation failed: {e}")
+            yield f"event: error\ndata: {json.dumps({'detail': str(e)})}\n\n"
+

@@ -23,6 +23,8 @@ def get_assessment_generation_service() -> AssessmentGenerationService:
     """Dependency injection provider for AssessmentGenerationService."""
     return AssessmentGenerationService()
 
+from fastapi.responses import StreamingResponse
+
 @router.post(
     "/generate",
     response_model=AssessmentGenerateResponse,
@@ -45,6 +47,34 @@ async def generate_assessment(
     Restricted to recruiters.
     """
     return await service.generate_assessment(request)
+
+@router.post(
+    "/generate-stream",
+    summary="Generate assessment questions using AI with real-time SSE streaming"
+)
+@plural_router.post(
+    "/generate-stream",
+    summary="Generate assessment questions using AI with real-time SSE streaming"
+)
+async def generate_assessment_stream(
+    request: AssessmentGenerateRequest,
+    current_user: User = Depends(require_recruiter),
+    service: AssessmentGenerationService = Depends(get_assessment_generation_service)
+):
+    """
+    Streams assessment question generation in real time via Server-Sent Events (SSE).
+    Restricted to recruiters.
+    """
+    return StreamingResponse(
+        service.stream_assessment_generation(request),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "Content-Type": "text/event-stream",
+            "X-Accel-Buffering": "no"
+        }
+    )
 
 from app.utils.question_sorter import sort_assessment_questions
 
