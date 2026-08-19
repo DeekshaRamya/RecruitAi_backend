@@ -351,48 +351,49 @@ class AssessmentGenerationService:
                     yield f"event: question\ndata: {json.dumps(q_copy)}\n\n"
                     await asyncio.sleep(0.02)
 
-            # 2. Stream remaining questions in fast micro-batches (chunk size: 2-3)
-            remaining_needed = total_needed - len(accumulated_questions)
-            if remaining_needed > 0:
-                chunk_size = 2 if remaining_needed <= 6 else 3
-                num_chunks = (remaining_needed + chunk_size - 1) // chunk_size
+            # 2. Stream remaining questions in micro-batches until total_needed is met
+            max_batch_attempts = 15
+            batch_attempt = 0
+            while len(accumulated_questions) < total_needed and batch_attempt < max_batch_attempts:
+                batch_attempt += 1
+                remaining_needed = total_needed - len(accumulated_questions)
+                current_chunk_count = min(3, remaining_needed)
+                if current_chunk_count <= 0:
+                    break
 
-                for chunk_idx in range(num_chunks):
-                    current_chunk_count = min(chunk_size, remaining_needed - (chunk_idx * chunk_size))
-                    if current_chunk_count <= 0:
-                        break
+                yield f"event: status\ndata: {json.dumps({'message': f'AI generating questions ({len(accumulated_questions)}/{total_needed} ready)...', 'stage': 'generating_chunk', 'received': len(accumulated_questions), 'target': total_needed})}\n\n"
 
-                    yield f"event: status\ndata: {json.dumps({'message': f'AI generating question batch {chunk_idx + 1}/{num_chunks}...', 'stage': 'generating_chunk', 'received': len(accumulated_questions), 'target': total_needed})}\n\n"
+                chunk_request = request.model_copy(deep=True)
+                chunk_request.totalQuestions = current_chunk_count
 
-                    chunk_request = request.model_copy(deep=True)
-                    chunk_request.totalQuestions = current_chunk_count
+                # If SQL only and scenarios were already generated, remaining must be MCQ
+                if has_sql and len(request.subjects) == 1 and sql_scenario_count > 0:
+                    chunk_request.questionDistribution.mcq = 100
+                    chunk_request.questionDistribution.scenario = 0
 
-                    # If SQL only and scenarios were already generated, remaining must be MCQ
-                    if has_sql and len(request.subjects) == 1 and sql_scenario_count > 0:
-                        chunk_request.questionDistribution.mcq = 100
-                        chunk_request.questionDistribution.scenario = 0
+                try:
+                    chunk_raw = await self.openai_service.generate_questions(
+                        chunk_request,
+                        existing_questions=existing_questions + [str(q.get('question') or q.get('problemStatement') or '') for q in accumulated_questions],
+                        exclude_sql_scenarios=(sql_scenario_count > 0)
+                    )
 
-                    try:
-                        chunk_raw = await self.openai_service.generate_questions(
-                            chunk_request,
-                            existing_questions=existing_questions + [str(q.get('question') or q.get('problemStatement') or '') for q in accumulated_questions],
-                            exclude_sql_scenarios=(sql_scenario_count > 0)
-                        )
+                    enriched_chunk = self._enrich_and_verify_sql_questions(chunk_raw)
 
-                        enriched_chunk = self._enrich_and_verify_sql_questions(chunk_raw)
-
-                        for q_data in enriched_chunk:
-                            try:
-                                validated_q = QuestionResponse(**q_data)
-                                q_dict = validated_q.model_dump()
-                                q_dict["id"] = len(accumulated_questions) + 1
-                                accumulated_questions.append(q_dict)
-                                yield f"event: question\ndata: {json.dumps(q_dict)}\n\n"
-                                await asyncio.sleep(0.02)
-                            except Exception as val_err:
-                                logger.warning(f"Error validating chunk question: {val_err}")
-                    except Exception as chunk_err:
-                        logger.warning(f"Chunk {chunk_idx + 1} generation attempt failed: {chunk_err}")
+                    for q_data in enriched_chunk:
+                        if len(accumulated_questions) >= total_needed:
+                            break
+                        try:
+                            validated_q = QuestionResponse(**q_data)
+                            q_dict = validated_q.model_dump()
+                            q_dict["id"] = len(accumulated_questions) + 1
+                            accumulated_questions.append(q_dict)
+                            yield f"event: question\ndata: {json.dumps(q_dict)}\n\n"
+                            await asyncio.sleep(0.02)
+                        except Exception as val_err:
+                            logger.warning(f"Error validating chunk question: {val_err}")
+                except Exception as chunk_err:
+                    logger.warning(f"Chunk generation attempt {batch_attempt} failed: {chunk_err}")
 
             total_streamed = len(accumulated_questions)
             logger.info(f"[SSE Stream Complete] Streamed {total_streamed} questions successfully.")
