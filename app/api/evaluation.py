@@ -13,6 +13,7 @@ from app.database.database import get_db, AsyncSessionLocal
 logger = logging.getLogger(__name__)
 from app.database.models import (
     User, 
+    Assessment,
     AssessmentAssignment, 
     UserRole, 
     CandidateAnswer, 
@@ -37,7 +38,11 @@ from app.schemas.evaluation import (
 )
 from app.services.azure_openai_service import AzureOpenAIService
 from app.services.code_execution_service import CodeExecutionService
-from app.utils.code_evaluator import evaluate_python_coding_submission_async, is_coding_scenario_question
+from app.utils.code_evaluator import (
+    evaluate_python_coding_submission_async,
+    evaluate_python_coding_submission,
+    is_coding_scenario_question
+)
 from app.dependencies.auth import require_candidate, require_recruiter, get_current_user
 from app.api.assignment import check_and_update_expired_assignments
 
@@ -1941,22 +1946,31 @@ async def get_recruiter_results(
     db: AsyncSession = Depends(get_db)
 ):
     """
-    Returns list of all results for assignments created by the recruiter.
+    Returns list of all results for assessments created by or assigned by the recruiter.
     """
-    result = await db.execute(
+    query = (
         select(AssessmentResult)
-        .join(AssessmentAssignment)
+        .join(AssessmentAssignment, AssessmentResult.assignment_id == AssessmentAssignment.id)
+        .join(Assessment, AssessmentResult.assessment_id == Assessment.id)
         .options(
             joinedload(AssessmentResult.assignment).joinedload(AssessmentAssignment.assessment),
             joinedload(AssessmentResult.candidate)
         )
-        .where(AssessmentAssignment.recruiter_id == current_user.id)
-        .order_by(AssessmentResult.created_at.desc())
     )
+    if current_user.role == UserRole.RECRUITER:
+        query = query.where(
+            (Assessment.created_by == current_user.id) |
+            (AssessmentAssignment.recruiter_id == current_user.id)
+        )
+    query = query.order_by(AssessmentResult.created_at.desc())
+    result = await db.execute(query)
     res_list = result.scalars().unique().all()
 
     response_items = []
     for res_obj in res_list:
+        asm_created_by = getattr(res_obj.assignment.assessment, 'created_by', None) if (res_obj.assignment and res_obj.assignment.assessment) else None
+        asgn_recruiter_id = getattr(res_obj.assignment, 'recruiter_id', None) if res_obj.assignment else None
+
         response_items.append(
             AssessmentResultResponse(
                 id=res_obj.id,
@@ -1978,9 +1992,11 @@ async def get_recruiter_results(
                 warningCount=res_obj.warning_count or 0,
                 warningHistory=res_obj.warning_history or [],
                 submissionType="Automatic" if res_obj.auto_submitted else "Manual",
-                candidateName=res_obj.candidate.full_name,
-                candidateEmail=res_obj.candidate.email,
-                assessmentName=res_obj.assignment.assessment.name,
+                candidateName=res_obj.candidate.full_name if res_obj.candidate else "Candidate",
+                candidateEmail=res_obj.candidate.email if res_obj.candidate else "",
+                assessmentName=res_obj.assignment.assessment.name if (res_obj.assignment and res_obj.assignment.assessment) else "Assessment",
+                assessmentCreatedBy=asm_created_by,
+                assignedByRecruiterId=asgn_recruiter_id,
                 overallFeedback=res_obj.overall_feedback,
                 overallStrengths=res_obj.overall_strengths,
                 overallWeaknesses=res_obj.overall_weaknesses,

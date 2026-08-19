@@ -37,6 +37,8 @@ class CandidateGroupResponse(BaseModel):
     created_at: datetime
     createdAt: datetime | None = None
     updated_at: datetime
+    created_by: uuid.UUID | None = None
+    createdBy: uuid.UUID | None = None
 
 class CreateCandidateGroupRequest(BaseModel):
     name: str

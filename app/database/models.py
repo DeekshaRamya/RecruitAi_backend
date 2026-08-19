@@ -54,6 +54,8 @@ class User(Base):
     def name(self) -> str:
         return self.full_name
 
+    login_history: Mapped[list["LoginHistory"]] = relationship("LoginHistory", back_populates="user", cascade="all, delete-orphan", lazy="selectin")
+
 class LoginHistory(Base):
     __tablename__ = "login_history"
 
@@ -75,6 +77,8 @@ class LoginHistory(Base):
     ip_address: Mapped[str | None] = mapped_column(String(45), nullable=True)
     device: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
+    user: Mapped["User"] = relationship("User", back_populates="login_history")
+
 class Assessment(Base):
     __tablename__ = "assessments"
 
@@ -92,6 +96,13 @@ class Assessment(Base):
     status: Mapped[str] = mapped_column(String(50), default="Active", nullable=False)
     candidates_assigned: Mapped[int] = mapped_column(default=0, nullable=False)
     questions: Mapped[list] = mapped_column(JSON, nullable=False)
+    created_by: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True
+    )
+
+    creator = relationship("User", foreign_keys=[created_by])
 
     # Compatibility properties for Pydantic/Frontend camelCase serialization
     @property
@@ -105,6 +116,10 @@ class Assessment(Base):
     @property
     def candidatesAssigned(self) -> int:
         return self.candidates_assigned
+
+    @property
+    def createdBy(self) -> uuid.UUID | None:
+        return self.created_by
 
 class AssessmentAssignment(Base):
     __tablename__ = "assessment_assignments"
@@ -537,6 +552,10 @@ class CandidateGroup(Base):
 
     # Relationships
     members = relationship("CandidateGroupMember", back_populates="group", cascade="all, delete-orphan")
+
+    @property
+    def createdBy(self) -> uuid.UUID | None:
+        return self.created_by
 
 
 class CandidateGroupMember(Base):

@@ -1,10 +1,10 @@
 from fastapi import APIRouter, Depends, status, HTTPException
-from typing import List
+from typing import List, Optional
 import uuid
-from sqlalchemy import select
+from sqlalchemy import select, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.database.database import get_db
-from app.database.models import User, Assessment
+from app.database.models import User, Assessment, UserRole
 from app.schemas.assessment import (
     AssessmentGenerateRequest, 
     AssessmentGenerateResponse,
@@ -78,13 +78,16 @@ async def generate_assessment_stream(
 
 from app.utils.question_sorter import sort_assessment_questions
 
-async def _get_all_assessments(db: AsyncSession):
+async def _get_all_assessments(db: AsyncSession, current_user: User = None):
     valid_statuses = ["Active", "ACTIVE", "Created", "CREATED"]
-    result = await db.execute(
-        select(Assessment)
-        .where(Assessment.status.in_(valid_statuses))
-        .order_by(Assessment.created_date.desc(), Assessment.id.desc())
-    )
+    query = select(Assessment).where(Assessment.status.in_(valid_statuses))
+    
+    # Recruiters strictly see only the assessments they created
+    if current_user and current_user.role == UserRole.RECRUITER:
+        query = query.where(Assessment.created_by == current_user.id)
+
+    query = query.order_by(Assessment.created_date.desc(), Assessment.id.desc())
+    result = await db.execute(query)
     assessments = result.scalars().unique().all()
 
     unique_assessments = []
@@ -118,10 +121,9 @@ async def get_assessments(
     db: AsyncSession = Depends(get_db)
 ):
     """
-    Retrieves all saved assessments from the database, ordered by ID descending.
-    Restricted to recruiters.
+    Retrieves saved assessments from the database, filtered by creator for recruiters.
     """
-    return await _get_all_assessments(db)
+    return await _get_all_assessments(db, current_user)
 
 @router.get(
     "/live-schema",
@@ -182,18 +184,19 @@ async def get_assessment_by_id(
 
     return assessment
 
-async def _save_assessment_data(request: AssessmentSaveRequest, db: AsyncSession):
+async def _save_assessment_data(request: AssessmentSaveRequest, db: AsyncSession, current_user: User = None):
     sorted_q = sort_assessment_questions(request.questions)
 
     # Check if an assessment with the exact same name and active status already exists to prevent duplicate insertion
     if request.name:
         name_clean = request.name.strip()
-        existing = await db.execute(
-            select(Assessment).where(
-                Assessment.name.ilike(name_clean),
-                Assessment.status.in_(["Active", "ACTIVE", "Created", "CREATED"])
-            ).order_by(Assessment.created_date.desc())
+        query = select(Assessment).where(
+            Assessment.name.ilike(name_clean),
+            Assessment.status.in_(["Active", "ACTIVE", "Created", "CREATED"])
         )
+        if current_user:
+            query = query.where(Assessment.created_by == current_user.id)
+        existing = await db.execute(query.order_by(Assessment.created_date.desc()))
         existing_asm = existing.scalars().first()
         if existing_asm:
             existing_asm.questions = sorted_q
@@ -202,6 +205,8 @@ async def _save_assessment_data(request: AssessmentSaveRequest, db: AsyncSession
             existing_asm.duration = request.duration
             existing_asm.questions_count = request.questionsCount
             existing_asm.created_date = request.createdDate
+            if current_user and not existing_asm.created_by:
+                existing_asm.created_by = current_user.id
             await db.commit()
             await db.refresh(existing_asm)
             return existing_asm
@@ -215,7 +220,8 @@ async def _save_assessment_data(request: AssessmentSaveRequest, db: AsyncSession
         created_date=request.createdDate,
         status=request.status,
         candidates_assigned=0,
-        questions=sorted_q
+        questions=sorted_q,
+        created_by=current_user.id if current_user else None
     )
     db.add(db_assessment)
     await db.commit()
@@ -249,7 +255,7 @@ async def save_assessment(
     Saves a new assessment and its generated questions to the database.
     Restricted to recruiters.
     """
-    return await _save_assessment_data(request, db)
+    return await _save_assessment_data(request, db, current_user)
 
 async def _update_assessment_data(id: str, request: AssessmentUpdateRequest, db: AsyncSession):
     try:

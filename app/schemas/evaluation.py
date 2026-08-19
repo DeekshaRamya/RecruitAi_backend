@@ -112,6 +112,8 @@ class AssessmentResultResponse(BaseModel):
     candidateName: Optional[str] = None
     candidateEmail: Optional[str] = None
     assessmentName: Optional[str] = None
+    assessmentCreatedBy: Optional[uuid.UUID] = None
+    assignedByRecruiterId: Optional[uuid.UUID] = None
     
     # Overall AI Evaluation details
     overallFeedback: Optional[str] = None

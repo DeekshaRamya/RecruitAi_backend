@@ -182,6 +182,8 @@ class AssessmentResponse(BaseModel):
     status: str
     candidatesAssigned: int
     questions: List[dict]
+    created_by: Optional[uuid.UUID] = None
+    createdBy: Optional[uuid.UUID] = None
 
 class AssessmentUpdateRequest(BaseModel):
     name: Optional[str] = None

@@ -236,6 +236,10 @@ async def run_schema_migrations(target_engine):
             );
             """
         ),
+        (
+            "Add created_by column to assessments",
+            "ALTER TABLE assessments ADD COLUMN IF NOT EXISTS created_by UUID REFERENCES users(id) ON DELETE SET NULL;"
+        ),
     ]
 
     is_postgres = target_engine.dialect.name == "postgresql"

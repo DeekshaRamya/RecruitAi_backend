@@ -34,16 +34,23 @@ async def get_recruiter_dashboard(
     total_candidates = res_cand.scalar() or 0
 
     valid_statuses = ["Active", "ACTIVE", "Created", "CREATED"]
-    res_asm = await db.execute(
-        select(func.count(Assessment.id)).where(Assessment.status.in_(valid_statuses))
-    )
+    asm_query = select(func.count(Assessment.id)).where(Assessment.status.in_(valid_statuses))
+    if current_user.role == UserRole.RECRUITER:
+        asm_query = asm_query.where(Assessment.created_by == current_user.id)
+    res_asm = await db.execute(asm_query)
     active_assessments = res_asm.scalar() or 0
 
-    res_completed = await db.execute(
-        select(func.count(AssessmentAssignment.id)).where(
-            AssessmentAssignment.status.in_(["SUBMITTED", "COMPLETED"])
-        )
+    comp_query = (
+        select(func.count(AssessmentAssignment.id))
+        .join(Assessment, AssessmentAssignment.assessment_id == Assessment.id)
+        .where(AssessmentAssignment.status.in_(["SUBMITTED", "COMPLETED"]))
     )
+    if current_user.role == UserRole.RECRUITER:
+        comp_query = comp_query.where(
+            (Assessment.created_by == current_user.id) |
+            (AssessmentAssignment.recruiter_id == current_user.id)
+        )
+    res_completed = await db.execute(comp_query)
     completed_assessments = res_completed.scalar() or 0
 
     return {
@@ -414,14 +421,21 @@ async def get_all_english_assessments(
     db: AsyncSession = Depends(get_db)
 ):
     """
-    Retrieves all English interview assessment logs. Access restricted to Recruiters.
+    Retrieves English interview assessment logs created by or assigned by the recruiter.
     """
-    # Join with User table to get candidate names
-    result = await db.execute(
+    query = (
         select(EnglishInterview, User.full_name, User.email)
         .join(User, User.id == EnglishInterview.candidate_id)
+        .outerjoin(Assessment, EnglishInterview.assessment_id == Assessment.id)
+        .outerjoin(AssessmentAssignment, EnglishInterview.assignment_id == AssessmentAssignment.id)
         .order_by(EnglishInterview.end_time.desc(), EnglishInterview.created_at.desc())
     )
+    if current_user.role == UserRole.RECRUITER:
+        query = query.where(
+            (Assessment.created_by == current_user.id) |
+            (AssessmentAssignment.recruiter_id == current_user.id)
+        )
+    result = await db.execute(query)
     rows = result.all()
     
     reports = []
@@ -443,44 +457,52 @@ async def get_all_english_assessments(
 
 @router.get(
     "/overall-results",
-    summary="Get unified comparison results for candidates with completed technical assessments assigned by logged-in recruiter"
+    summary="Get unified comparison results for candidates with completed technical assessments created by or assigned by logged-in recruiter"
 )
 async def get_overall_results(
     current_user: User = Depends(require_recruiter),
     db: AsyncSession = Depends(get_db)
 ):
     """
-    Returns consolidated assessment scores (Technical & English) ONLY for candidates who:
-    1. Have been assigned an assessment by the logged-in recruiter.
-    2. Have successfully COMPLETED their Technical Assessment.
+    Returns consolidated assessment scores (Technical & English) ONLY for candidates whose
+    assessments were created by or assigned by the logged-in recruiter.
     """
-    # Query assignments assigned by current recruiter that are COMPLETED/SUBMITTED or have an AssessmentResult
-    assignments_res = await db.execute(
+    query = (
         select(AssessmentAssignment)
+        .join(Assessment, AssessmentAssignment.assessment_id == Assessment.id)
         .options(
             selectinload(AssessmentAssignment.candidate),
             selectinload(AssessmentAssignment.result)
         )
         .where(
-            AssessmentAssignment.recruiter_id == current_user.id,
             AssessmentAssignment.status.in_(["COMPLETED", "SUBMITTED"])
         )
     )
+    if current_user.role == UserRole.RECRUITER:
+        query = query.where(
+            (Assessment.created_by == current_user.id) |
+            (AssessmentAssignment.recruiter_id == current_user.id)
+        )
+    assignments_res = await db.execute(query)
     completed_assignments = assignments_res.scalars().all()
 
-    # Also check if there are AssessmentResults linked to assignments created by current recruiter
+    # Also check if there are AssessmentResults linked to assignments for current recruiter's assessments
     if not completed_assignments:
-        results_res = await db.execute(
+        res_query = (
             select(AssessmentAssignment)
+            .join(Assessment, AssessmentAssignment.assessment_id == Assessment.id)
+            .join(AssessmentResult, AssessmentResult.assignment_id == AssessmentAssignment.id)
             .options(
                 selectinload(AssessmentAssignment.candidate),
                 selectinload(AssessmentAssignment.result)
             )
-            .join(AssessmentResult, AssessmentResult.assignment_id == AssessmentAssignment.id)
-            .where(
-                AssessmentAssignment.recruiter_id == current_user.id
-            )
         )
+        if current_user.role == UserRole.RECRUITER:
+            res_query = res_query.where(
+                (Assessment.created_by == current_user.id) |
+                (AssessmentAssignment.recruiter_id == current_user.id)
+            )
+        results_res = await db.execute(res_query)
         completed_assignments = results_res.scalars().all()
 
     # Filter candidates with valid candidates and non-null completed technical results
@@ -657,11 +679,14 @@ async def get_all_groups(
     db: AsyncSession = Depends(get_db)
 ):
     """
-    Retrieves all candidate groups/batches with member candidate IDs.
+    Retrieves candidate groups/batches created by the recruiter.
     """
-    result = await db.execute(
-        select(CandidateGroup).options(selectinload(CandidateGroup.members)).order_by(CandidateGroup.created_at.desc())
-    )
+    query = select(CandidateGroup).options(selectinload(CandidateGroup.members))
+    if current_user.role == UserRole.RECRUITER:
+        query = query.where(CandidateGroup.created_by == current_user.id)
+
+    query = query.order_by(CandidateGroup.created_at.desc())
+    result = await db.execute(query)
     groups = result.scalars().all()
     
     response = []
@@ -674,7 +699,9 @@ async def get_all_groups(
             candidateIds=cand_ids,
             created_at=g.created_at,
             createdAt=g.created_at,
-            updated_at=g.updated_at
+            updated_at=g.updated_at,
+            created_by=g.created_by,
+            createdBy=g.created_by
         ))
     return response
 
