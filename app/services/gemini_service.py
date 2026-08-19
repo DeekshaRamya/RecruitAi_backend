@@ -3,6 +3,7 @@ import logging
 import httpx
 from typing import Dict, Any, List, Optional
 from app.core.config import settings
+from app.services.ai_usage_service import AiFeature
 
 logger = logging.getLogger("recruitai-backend.gemini_service")
 
@@ -25,12 +26,30 @@ class GeminiService:
         self.voice = getattr(settings, "GEMINI_VOICE", "Puck")
         self.base_url = f"https://generativelanguage.googleapis.com/v1beta/models/{self.model}:generateContent"
 
-    async def _call_ai(self, prompt: str, system_instruction: Optional[str] = None, json_mode: bool = False) -> str:
+    async def _call_ai(
+        self, 
+        prompt: str, 
+        system_instruction: Optional[str] = None, 
+        json_mode: bool = False,
+        feature_name: str = "English Assessment",
+        user_id = None,
+        user_name: Optional[str] = None,
+        role: Optional[str] = None,
+        db = None
+    ) -> str:
         """
-        Executes AI completion using the configured Gemini model (gemini-3.1-flash-lite).
+        Executes AI completion using the configured Gemini model.
+        Logs AI usage into ai_usage_logs table.
         """
+        import time
+        from datetime import datetime, timezone
+        from app.services.ai_usage_service import AiUsageService
+
+        req_time = datetime.now(timezone.utc)
+        start_ticks = time.perf_counter()
+        model_name = self.model or "gemini-3.1-flash-lite"
+
         if self.api_key:
-            model_name = self.model
             try:
                 url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={self.api_key}"
                 headers = {"Content-Type": "application/json"}
@@ -50,14 +69,66 @@ class GeminiService:
 
                 async with httpx.AsyncClient() as client:
                     response = await client.post(url, json=payload, headers=headers, timeout=10.0)
+                    response_time = int((time.perf_counter() - start_ticks) * 1000)
+
                     if response.status_code == 200:
                         data = response.json()
                         text = data["candidates"][0]["content"]["parts"][0]["text"]
+                        
+                        usage_meta = data.get("usageMetadata", {})
+                        inp_tokens = usage_meta.get("promptTokenCount", 0)
+                        out_tokens = usage_meta.get("candidatesTokenCount", 0)
+                        tot_tokens = usage_meta.get("totalTokenCount", inp_tokens + out_tokens)
+
+                        await AiUsageService.log_usage(
+                            user_id=user_id,
+                            user_name=user_name,
+                            role=role,
+                            ai_provider="Gemini",
+                            model_name=model_name,
+                            feature_name=feature_name,
+                            input_tokens=inp_tokens,
+                            output_tokens=out_tokens,
+                            total_tokens=tot_tokens,
+                            request_time=req_time,
+                            response_time_ms=response_time,
+                            status="Success",
+                            db=db
+                        )
+
                         return text.strip()
                     else:
-                        logger.error(f"Gemini API ({model_name}) returned error status {response.status_code}: {response.text}")
+                        err_msg = f"Gemini API ({model_name}) returned status {response.status_code}: {response.text}"
+                        logger.error(err_msg)
+                        await AiUsageService.log_usage(
+                            user_id=user_id,
+                            user_name=user_name,
+                            role=role,
+                            ai_provider="Gemini",
+                            model_name=model_name,
+                            feature_name=feature_name,
+                            request_time=req_time,
+                            response_time_ms=response_time,
+                            status="Failed",
+                            error_message=err_msg,
+                            db=db
+                        )
             except Exception as e:
+                response_time = int((time.perf_counter() - start_ticks) * 1000)
                 logger.warning(f"Gemini API ({model_name}) call failed: {e}")
+                await AiUsageService.log_usage(
+                    user_id=user_id,
+                    user_name=user_name,
+                    role=role,
+                    ai_provider="Gemini",
+                    model_name=model_name,
+                    feature_name=feature_name,
+                    request_time=req_time,
+                    response_time_ms=response_time,
+                    status="Failed",
+                    error_message=str(e),
+                    db=db
+                )
 
         raise ValueError("Gemini API call failed and no alternative AI model is configured.")
 
@@ -86,7 +157,7 @@ class GeminiService:
         4. Keep the greeting strictly under 25 words total.
         """
         try:
-            return await self._call_ai(prompt, system_instruction)
+            return await self._call_ai(prompt, system_instruction, feature_name=AiFeature.ENGLISH_QUESTION_GENERATION)
         except Exception as e:
             logger.warning(f"Failed to generate first question via AI API: {e}. Using personalized fallback.")
             return f"Hi {candidate_name}, nice to meet you! Could you please tell me about yourself and give a brief overview of your background?"
@@ -208,7 +279,7 @@ class GeminiService:
         """
 
         try:
-            response_text = await self._call_ai(prompt, system_instruction, json_mode=True)
+            response_text = await self._call_ai(prompt, system_instruction, json_mode=True, feature_name=AiFeature.ENGLISH_QUESTION_GENERATION)
             cleaned = response_text.strip()
             if cleaned.startswith("```json"):
                 cleaned = cleaned[7:]
@@ -462,7 +533,7 @@ class GeminiService:
         """
 
         try:
-            response_text = await self._call_ai(prompt, system_instruction, json_mode=True)
+            response_text = await self._call_ai(prompt, system_instruction, json_mode=True, feature_name=AiFeature.ENGLISH_SPEAKING_EVALUATION)
             cleaned = response_text.strip()
             if cleaned.startswith("```json"):
                 cleaned = cleaned[7:]

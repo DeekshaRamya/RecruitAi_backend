@@ -6,10 +6,12 @@ from fastapi.testclient import TestClient
 from app.main import app
 from app.database.models import User, UserRole
 from app.core.security import create_access_token
+from sqlalchemy import select
 
 @pytest.fixture
 def client():
-    return TestClient(app)
+    with TestClient(app) as c:
+        yield c
 
 @pytest.mark.anyio
 async def test_e2e_assessment_flow(client):
@@ -28,6 +30,18 @@ async def test_e2e_assessment_flow(client):
     # Ensure the candidate user physically exists in the database
     from app.database.database import AsyncSessionLocal
     async with AsyncSessionLocal() as db:
+        recruiter_id = uuid.UUID("00000000-0000-0000-0000-000000000001")
+        rec_res = await db.execute(select(User).where(User.id == recruiter_id))
+        if not rec_res.scalar_one_or_none():
+            recruiter_db = User(
+                id=recruiter_id,
+                full_name="Default Recruiter",
+                email="recruiter@recruitai.com",
+                role=UserRole.RECRUITER,
+                password="test_password"
+            )
+            db.add(recruiter_db)
+
         candidate_db = User(
             id=uuid.UUID(candidate_id),
             full_name="E2E Test Candidate",

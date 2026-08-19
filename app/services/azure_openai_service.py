@@ -5,6 +5,7 @@ from typing import Dict, Any, List, Optional
 from app.core.azure_openai import AzureOpenAIClient
 from app.schemas.assessment import AssessmentGenerateRequest
 from app.schemas.interview import InterviewGenerateRequest, InterviewEvaluateRequest
+from app.services.ai_usage_service import AiFeature
 
 logger = logging.getLogger("recruitai-backend.azure_openai_service")
 
@@ -282,8 +283,19 @@ class AzureOpenAIService:
             "- Every generated question MUST be completely unique and non-repetitive."
         )
 
+        # Determine specific feature name from subjects
+        feature_name = AiFeature.ASSESSMENT_EVALUATION
+        if any("PYTHON" in str(s).upper() for s in request.subjects):
+            feature_name = AiFeature.PYTHON_QUESTION_GENERATION
+        elif any("APTITUDE" in str(s).upper() for s in request.subjects):
+            feature_name = AiFeature.APTITUDE_QUESTION_GENERATION
+        elif any("SQL" in str(s).upper() for s in request.subjects):
+            feature_name = AiFeature.SQL_QUESTION_GENERATION
+        elif any("ENGLISH" in str(s).upper() for s in request.subjects):
+            feature_name = AiFeature.ENGLISH_QUESTION_GENERATION
+
         # 2. Invoke Azure OpenAI via the client
-        raw_response = await self.client.generate_chat_completion(prompt, system_message)
+        raw_response = await self.client.generate_chat_completion(prompt, system_message, feature_name=feature_name)
         
         # 3. Clean and parse JSON
         cleaned_json = self._clean_json(raw_response)
@@ -364,7 +376,7 @@ Return ONLY a valid JSON object matching this schema (no markdown, no additional
         )
 
         try:
-            raw_res = await self.client.generate_chat_completion(prompt, system_msg)
+            raw_res = await self.client.generate_chat_completion(prompt, system_msg, feature_name=AiFeature.PYTHON_ANSWER_EVALUATION)
             cleaned_json = self._clean_json(raw_res)
             data = json.loads(cleaned_json)
 
@@ -504,7 +516,7 @@ RETURN ONLY A CLEAN JSON OBJECT WITH THE FOLLOWING SCHEMA:
             "You are an expert SQL assessment developer. You generate brand-new, unique T-SQL scenario questions for recruitment exams strictly based on the AdventureWorks SQL Server database schema."
         )
 
-        raw_response = await self.client.generate_chat_completion(prompt, system_msg)
+        raw_response = await self.client.generate_chat_completion(prompt, system_msg, feature_name=AiFeature.SQL_QUESTION_GENERATION)
         cleaned_json = self._clean_json(raw_response)
         try:
             data = json.loads(cleaned_json)
@@ -1396,7 +1408,16 @@ RESPONSE SCHEMA (RETURN RAW CLEAN JSON ONLY):
             "or code blocks (no ```json or ```). Your response must be clean JSON."
         )
 
-        raw_response = await self.client.generate_chat_completion(prompt, system_message)
+        cat_upper = str(request.category).upper()
+        top_upper = str(request.topic).upper()
+        if "SQL" in cat_upper or "SQL" in top_upper:
+            feature_name = AiFeature.SQL_QUESTION_GENERATION
+        elif "PYTHON" in cat_upper or "PYTHON" in top_upper:
+            feature_name = AiFeature.PYTHON_QUESTION_GENERATION
+        else:
+            feature_name = AiFeature.ASSESSMENT_EVALUATION
+
+        raw_response = await self.client.generate_chat_completion(prompt, system_message, feature_name=feature_name)
         cleaned_json = self._clean_json(raw_response)
 
         try:
@@ -1470,7 +1491,16 @@ Response Schema:
             "or code blocks (no ```json or ```). Your response must be clean JSON."
         )
 
-        raw_response = await self.client.generate_chat_completion(prompt, system_message)
+        cat_upper = str(request.category).upper()
+        top_upper = str(request.topic).upper()
+        if "SQL" in cat_upper or "SQL" in top_upper:
+            feature_name = AiFeature.SQL_ANSWER_EVALUATION
+        elif "PYTHON" in cat_upper or "PYTHON" in top_upper:
+            feature_name = AiFeature.PYTHON_ANSWER_EVALUATION
+        else:
+            feature_name = AiFeature.ASSESSMENT_EVALUATION
+
+        raw_response = await self.client.generate_chat_completion(prompt, system_message, feature_name=feature_name)
         cleaned_json = self._clean_json(raw_response)
 
         try:
@@ -1623,7 +1653,16 @@ Response Schema:
             "You must return ONLY a JSON object matching the requested schema."
         )
 
-        raw_response = await self.client.generate_chat_completion(prompt, system_message)
+        q_upper = str(question).upper()
+        ans_upper = str(correct_answer).upper()
+        if "SQL" in q_upper or "SELECT" in ans_upper or "FROM" in ans_upper:
+            feature_name = AiFeature.SQL_ANSWER_EVALUATION
+        elif "PYTHON" in q_upper or "DEF " in ans_upper or "PRINT" in ans_upper:
+            feature_name = AiFeature.PYTHON_ANSWER_EVALUATION
+        else:
+            feature_name = AiFeature.ASSESSMENT_EVALUATION
+
+        raw_response = await self.client.generate_chat_completion(prompt, system_message, feature_name=feature_name)
         cleaned_json = self._clean_json(raw_response)
 
         try:
@@ -1716,7 +1755,7 @@ Response Schema:
         )
 
         try:
-            raw_response = await self.client.generate_chat_completion(prompt, system_message)
+            raw_response = await self.client.generate_chat_completion(prompt, system_message, feature_name=AiFeature.CANDIDATE_FEEDBACK_GENERATION)
             cleaned_json = self._clean_json(raw_response)
             data = json.loads(cleaned_json)
             return {
@@ -1772,7 +1811,7 @@ Response Schema:
             "or code blocks (no ```json or ```). Your response must be clean JSON."
         )
         
-        raw_response = await self.client.generate_chat_completion(prompt, system_message)
+        raw_response = await self.client.generate_chat_completion(prompt, system_message, feature_name=AiFeature.RESUME_ANALYSIS)
         cleaned_json = self._clean_json(raw_response)
         
         try:

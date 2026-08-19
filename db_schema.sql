@@ -31,3 +31,23 @@ CREATE TABLE IF NOT EXISTS login_history (
 
 -- Create index on user_id in login_history for faster metrics/history tracking
 CREATE INDEX IF NOT EXISTS idx_login_history_user_id ON login_history(user_id);
+
+-- Create Candidate Profiles table (stores candidate resume & assessment score feature data)
+CREATE TABLE IF NOT EXISTS candidate_profiles (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    candidate_id UUID NOT NULL UNIQUE,
+    resume_filename VARCHAR(255),
+    resume_score INTEGER,
+    python_score INTEGER,
+    sql_score INTEGER,
+    aptitude_score INTEGER,
+    english_score INTEGER,
+    resume_analysis JSON,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    CONSTRAINT fk_candidate_profiles_user FOREIGN KEY (candidate_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+-- Create index on candidate_id in candidate_profiles
+CREATE INDEX IF NOT EXISTS idx_candidate_profiles_candidate_id ON candidate_profiles(candidate_id);
+

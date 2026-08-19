@@ -67,7 +67,7 @@ async def check_tables_exist(conn) -> bool:
         def inspect_tables(sync_conn):
             inspector = inspect(sync_conn)
             existing = set(inspector.get_table_names())
-            required = {"users", "assessments", "candidate_answers", "assessment_results"}
+            required = {"users", "assessments", "candidate_answers", "assessment_results", "candidate_profiles"}
             return required.issubset(existing)
         return await conn.run_sync(inspect_tables)
     except Exception as e:
@@ -76,7 +76,7 @@ async def check_tables_exist(conn) -> bool:
 
 async def is_schema_up_to_date(conn) -> bool:
     """
-    Fast metadata query (<15ms) to verify if database schema has all migrated columns.
+    Fast metadata query (<15ms) to verify if database schema has all migrated columns and tables.
     Returns True if schema is up to date, False if migrations are needed.
     """
     try:
@@ -86,16 +86,17 @@ async def is_schema_up_to_date(conn) -> bool:
                 SELECT table_name, column_name 
                 FROM information_schema.columns 
                 WHERE (table_name = 'candidate_answers' AND column_name IN ('assessment_id', 'test_results'))
-                   OR (table_name = 'assessment_results' AND column_name IN ('overall_feedback', 'warning_history'));
+                   OR (table_name = 'assessment_results' AND column_name IN ('overall_feedback', 'warning_history'))
+                   OR (table_name = 'candidate_profiles' AND column_name = 'candidate_id');
             """)
             result = await conn.execute(query)
             found_cols = set(result.fetchall())
-            return len(found_cols) >= 4
+            return len(found_cols) >= 5
         else:
             def inspect_columns(sync_conn):
                 inspector = inspect(sync_conn)
                 tables = inspector.get_table_names()
-                if "candidate_answers" not in tables or "assessment_results" not in tables:
+                if "candidate_answers" not in tables or "assessment_results" not in tables or "candidate_profiles" not in tables:
                     return False
                 ca_cols = [c["name"] for c in inspector.get_columns("candidate_answers")]
                 ar_cols = [c["name"] for c in inspector.get_columns("assessment_results")]
@@ -240,6 +241,70 @@ async def run_schema_migrations(target_engine):
             "Add created_by column to assessments",
             "ALTER TABLE assessments ADD COLUMN IF NOT EXISTS created_by UUID REFERENCES users(id) ON DELETE SET NULL;"
         ),
+        (
+            "Create ai_usage_logs table",
+            """
+            CREATE TABLE IF NOT EXISTS ai_usage_logs (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                user_id UUID REFERENCES users(id) ON DELETE SET NULL,
+                user_name VARCHAR(255),
+                role VARCHAR(50),
+                ai_provider VARCHAR(100) NOT NULL,
+                model_name VARCHAR(100) NOT NULL,
+                feature_name VARCHAR(150) NOT NULL,
+                request_id VARCHAR(255),
+                input_tokens INTEGER DEFAULT 0,
+                output_tokens INTEGER DEFAULT 0,
+                total_tokens INTEGER DEFAULT 0,
+                request_time TIMESTAMP WITH TIME ZONE NOT NULL,
+                response_time_ms INTEGER NOT NULL DEFAULT 0,
+                status VARCHAR(50) NOT NULL DEFAULT 'Success',
+                error_message TEXT,
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW() NOT NULL
+            );
+            """
+        ),
+        (
+            "Create candidate_profiles table",
+            """
+            CREATE TABLE IF NOT EXISTS candidate_profiles (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                candidate_id UUID NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE,
+                resume_filename VARCHAR(255),
+                resume_score INTEGER,
+                python_score INTEGER,
+                sql_score INTEGER,
+                aptitude_score INTEGER,
+                english_score INTEGER,
+                resume_analysis JSON,
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW() NOT NULL,
+                updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW() NOT NULL
+            );
+            """
+        ),
+        (
+            "Migrate legacy candidate columns from users to candidate_profiles if present",
+            """
+            DO $$
+            BEGIN
+                IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'users' AND column_name = 'resume_filename') THEN
+                    INSERT INTO candidate_profiles (id, candidate_id, resume_filename, resume_score, python_score, sql_score, aptitude_score, english_score, resume_analysis)
+                    SELECT gen_random_uuid(), id, resume_filename, resume_score, python_score, sql_score, aptitude_score, english_score, resume_analysis
+                    FROM users
+                    WHERE resume_filename IS NOT NULL OR resume_score IS NOT NULL OR python_score IS NOT NULL OR sql_score IS NOT NULL OR aptitude_score IS NOT NULL OR english_score IS NOT NULL OR resume_analysis IS NOT NULL
+                    ON CONFLICT (candidate_id) DO NOTHING;
+
+                    ALTER TABLE users DROP COLUMN IF EXISTS resume_filename;
+                    ALTER TABLE users DROP COLUMN IF EXISTS resume_score;
+                    ALTER TABLE users DROP COLUMN IF EXISTS python_score;
+                    ALTER TABLE users DROP COLUMN IF EXISTS sql_score;
+                    ALTER TABLE users DROP COLUMN IF EXISTS aptitude_score;
+                    ALTER TABLE users DROP COLUMN IF EXISTS english_score;
+                    ALTER TABLE users DROP COLUMN IF EXISTS resume_analysis;
+                END IF;
+            END $$;
+            """
+        ),
     ]
 
     is_postgres = target_engine.dialect.name == "postgresql"
@@ -306,13 +371,7 @@ async def main_cli():
     """
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
     logger.info("Starting standalone database migration runner...")
-    async with engine.connect() as conn:
-        up_to_date = await is_schema_up_to_date(conn)
-        if up_to_date:
-            logger.info("Database schema is already up to date!")
-        else:
-            logger.info("Outdated schema detected. Executing migrations...")
-            await run_schema_migrations(engine)
+    await run_schema_migrations(engine)
     logger.info("Migration runner finished.")
 
 if __name__ == "__main__":

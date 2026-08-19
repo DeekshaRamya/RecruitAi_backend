@@ -7,7 +7,8 @@ from app.database.database import AsyncSessionLocal
 
 @pytest.fixture
 def client():
-    return TestClient(app)
+    with TestClient(app) as c:
+        yield c
 
 @pytest.mark.anyio
 async def test_get_all_candidates_endpoint(client):

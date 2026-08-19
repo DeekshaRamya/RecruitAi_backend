@@ -18,7 +18,7 @@ import app.database.models
 from app.api.auth import router as auth_router
 from app.api.users import router as users_router
 from app.api.candidate import router as candidate_router
-from app.api.recruiter import router as recruiter_router, candidates_router, groups_router
+from app.api.recruiter import router as recruiter_router, candidates_router, groups_router, admin_router
 from app.api.assessment import router as assessment_router, plural_router as assessments_plural_router
 from app.api.interview import router as interview_router
 from app.api.assignment import router as assignment_router
@@ -215,6 +215,7 @@ app.include_router(candidate_router)
 app.include_router(recruiter_router)
 app.include_router(candidates_router)
 app.include_router(groups_router)
+app.include_router(admin_router)
 app.include_router(assessment_router)
 app.include_router(assessments_plural_router)
 app.include_router(assignment_router)

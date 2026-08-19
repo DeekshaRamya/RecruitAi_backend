@@ -10,6 +10,33 @@ class UserRole(str, enum.Enum):
     RECRUITER = "recruiter"
     CANDIDATE = "candidate"
 
+class CandidateProfile(Base):
+    __tablename__ = "candidate_profiles"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), 
+        primary_key=True, 
+        default=uuid.uuid4
+    )
+    candidate_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        unique=True,
+        nullable=False
+    )
+    resume_filename: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    resume_score: Mapped[int | None] = mapped_column(nullable=True)
+    python_score: Mapped[int | None] = mapped_column(nullable=True)
+    sql_score: Mapped[int | None] = mapped_column(nullable=True)
+    aptitude_score: Mapped[int | None] = mapped_column(nullable=True)
+    english_score: Mapped[int | None] = mapped_column(nullable=True)
+    resume_analysis: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    candidate: Mapped["User"] = relationship("User", back_populates="candidate_profile")
+
+
 class User(Base):
     __tablename__ = "users"
 
@@ -40,19 +67,88 @@ class User(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
-    # Candidate resume & scores columns
-    resume_filename: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    resume_score: Mapped[int | None] = mapped_column(nullable=True)
-    python_score: Mapped[int | None] = mapped_column(nullable=True)
-    sql_score: Mapped[int | None] = mapped_column(nullable=True)
-    aptitude_score: Mapped[int | None] = mapped_column(nullable=True)
-    english_score: Mapped[int | None] = mapped_column(nullable=True)
-    resume_analysis: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    # Candidate profile relationship (stores feature-specific resume & assessment score data)
+    candidate_profile: Mapped[CandidateProfile | None] = relationship(
+        "CandidateProfile",
+        back_populates="candidate",
+        uselist=False,
+        cascade="all, delete-orphan",
+        lazy="selectin"
+    )
 
-    # Compatibility property for frontend
+    # Helper to get or build candidate profile for property delegation
+    def _get_or_create_profile(self) -> CandidateProfile:
+        if self.candidate_profile is None:
+            self.candidate_profile = CandidateProfile(candidate_id=self.id)
+        return self.candidate_profile
+
+    # Compatibility properties delegating candidate feature fields to candidate_profile entity
     @property
     def name(self) -> str:
         return self.full_name
+
+    @property
+    def resume_filename(self) -> str | None:
+        return self.candidate_profile.resume_filename if self.candidate_profile else None
+
+    @resume_filename.setter
+    def resume_filename(self, val: str | None):
+        profile = self._get_or_create_profile()
+        profile.resume_filename = val
+
+    @property
+    def resume_score(self) -> int | None:
+        return self.candidate_profile.resume_score if self.candidate_profile else None
+
+    @resume_score.setter
+    def resume_score(self, val: int | None):
+        profile = self._get_or_create_profile()
+        profile.resume_score = val
+
+    @property
+    def python_score(self) -> int | None:
+        return self.candidate_profile.python_score if self.candidate_profile else None
+
+    @python_score.setter
+    def python_score(self, val: int | None):
+        profile = self._get_or_create_profile()
+        profile.python_score = val
+
+    @property
+    def sql_score(self) -> int | None:
+        return self.candidate_profile.sql_score if self.candidate_profile else None
+
+    @sql_score.setter
+    def sql_score(self, val: int | None):
+        profile = self._get_or_create_profile()
+        profile.sql_score = val
+
+    @property
+    def aptitude_score(self) -> int | None:
+        return self.candidate_profile.aptitude_score if self.candidate_profile else None
+
+    @aptitude_score.setter
+    def aptitude_score(self, val: int | None):
+        profile = self._get_or_create_profile()
+        profile.aptitude_score = val
+
+    @property
+    def english_score(self) -> int | None:
+        return self.candidate_profile.english_score if self.candidate_profile else None
+
+    @english_score.setter
+    def english_score(self, val: int | None):
+        profile = self._get_or_create_profile()
+        profile.english_score = val
+
+    @property
+    def resume_analysis(self) -> list | None:
+        return self.candidate_profile.resume_analysis if self.candidate_profile else None
+
+    @resume_analysis.setter
+    def resume_analysis(self, val: list | None):
+        profile = self._get_or_create_profile()
+        profile.resume_analysis = val
 
     login_history: Mapped[list["LoginHistory"]] = relationship("LoginHistory", back_populates="user", cascade="all, delete-orphan", lazy="selectin")
 
@@ -585,3 +681,35 @@ class CandidateGroupMember(Base):
     # Relationships
     group = relationship("CandidateGroup", back_populates="members")
     candidate = relationship("User", foreign_keys=[candidate_id])
+
+
+class AiUsageLog(Base):
+    __tablename__ = "ai_usage_logs"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), 
+        primary_key=True, 
+        default=uuid.uuid4
+    )
+    user_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True
+    )
+    user_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    role: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    ai_provider: Mapped[str] = mapped_column(String(100), nullable=False)
+    model_name: Mapped[str] = mapped_column(String(100), nullable=False)
+    feature_name: Mapped[str] = mapped_column(String(150), nullable=False)
+    request_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    input_tokens: Mapped[int | None] = mapped_column(default=0, nullable=True)
+    output_tokens: Mapped[int | None] = mapped_column(default=0, nullable=True)
+    total_tokens: Mapped[int | None] = mapped_column(default=0, nullable=True)
+    request_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    response_time_ms: Mapped[int] = mapped_column(default=0, nullable=False)
+    status: Mapped[str] = mapped_column(String(50), default="Success", nullable=False)
+    error_message: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    user = relationship("User", foreign_keys=[user_id])
+

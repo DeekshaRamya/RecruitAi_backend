@@ -8,12 +8,13 @@ from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.database.database import get_db
 from app.dependencies.auth import require_recruiter
-from app.database.models import User, UserRole, Assessment, AssessmentAssignment, EnglishInterview, AssessmentResult, CandidateGroup, CandidateGroupMember
+from app.database.models import User, UserRole, Assessment, AssessmentAssignment, EnglishInterview, AssessmentResult, CandidateGroup, CandidateGroupMember, AiUsageLog
 from app.schemas.auth import UserResponse
 from app.schemas.recruiter import CandidateGroupResponse, CreateCandidateGroupRequest, UpdateCandidateGroupRequest
 from app.api.assignment import check_and_update_expired_assignments
 
 router = APIRouter(prefix="/api/recruiter", tags=["Recruiter Endpoints"])
+admin_router = APIRouter(prefix="/api/admin", tags=["Admin Endpoints"])
 
 UPLOAD_DIR = "./uploads"
 
@@ -829,4 +830,61 @@ async def delete_candidate_group(
     await db.delete(group)
     await db.commit()
     return {"message": "Group deleted successfully", "id": str(group_id)}
+
+
+@admin_router.get(
+    "/ai-usage",
+    summary="Get AI Usage Request Logs for Admin Dashboard",
+    response_model=List[dict]
+)
+async def get_ai_usage_logs(
+    current_user: User = Depends(require_recruiter),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Retrieves individual AI API request logs for the Admin AI Usage Dashboard.
+    Returns every AI request as an individual log row sorted by request_time DESC.
+    Displays user email in place of 'Anonymous Device'.
+    """
+    stmt = (
+        select(AiUsageLog, User.email.label("u_email"))
+        .outerjoin(User, AiUsageLog.user_id == User.id)
+        .order_by(AiUsageLog.request_time.desc())
+        .limit(1000)
+    )
+    res = await db.execute(stmt)
+    rows = res.all()
+
+    output = []
+    for l, u_email in rows:
+        display_user = u_email
+        if not display_user:
+            if l.user_name and l.user_name not in ("Anonymous Device", "System / Anonymous", "System"):
+                display_user = l.user_name
+            elif current_user and current_user.email:
+                display_user = current_user.email
+            else:
+                display_user = "system@recruitai.com"
+
+        output.append({
+            "id": str(l.id),
+            "user_id": str(l.user_id) if l.user_id else None,
+            "user_name": display_user,
+            "user_email": display_user,
+            "role": l.role or (current_user.role.value if current_user and hasattr(current_user.role, 'value') else "RECRUITER"),
+            "ai_provider": l.ai_provider,
+            "model_name": l.model_name,
+            "feature_name": l.feature_name,
+            "request_id": l.request_id,
+            "input_tokens": l.input_tokens or 0,
+            "output_tokens": l.output_tokens or 0,
+            "total_tokens": l.total_tokens or 0,
+            "request_time": l.request_time.isoformat() if l.request_time else None,
+            "response_time_ms": l.response_time_ms,
+            "status": l.status,
+            "error_message": l.error_message,
+            "created_at": l.created_at.isoformat() if l.created_at else None
+        })
+    return output
+
 
