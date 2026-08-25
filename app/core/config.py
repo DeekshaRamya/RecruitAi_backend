@@ -52,6 +52,12 @@ class Settings(BaseModel):
     GEMINI_VOICE: str = Field(default_factory=lambda: os.getenv("GEMINI_VOICE", "Puck"))
 
 
+    # Cloudinary & Video Storage
+    CLOUDINARY_CLOUD_NAME: str = Field(default_factory=lambda: os.getenv("CLOUDINARY_CLOUD_NAME", ""))
+    CLOUDINARY_API_KEY: str = Field(default_factory=lambda: os.getenv("CLOUDINARY_API_KEY", ""))
+    CLOUDINARY_API_SECRET: str = Field(default_factory=lambda: os.getenv("CLOUDINARY_API_SECRET", ""))
+    VIDEO_STORAGE_PROVIDER: str = Field(default_factory=lambda: os.getenv("VIDEO_STORAGE_PROVIDER", "cloudinary"))
+
     # Python Execution API
     PYTHON_EXECUTION_API_URL: str = Field(default_factory=lambda: os.getenv("PYTHON_EXECUTION_API_URL", "http://172.176.122.4:5000/run-python"))
 
@@ -61,4 +67,5 @@ class Settings(BaseModel):
 
 # Global Settings Instance
 settings = Settings()
+
 

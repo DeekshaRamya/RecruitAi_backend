@@ -87,16 +87,17 @@ async def is_schema_up_to_date(conn) -> bool:
                 FROM information_schema.columns 
                 WHERE (table_name = 'candidate_answers' AND column_name IN ('assessment_id', 'test_results'))
                    OR (table_name = 'assessment_results' AND column_name IN ('overall_feedback', 'warning_history'))
-                   OR (table_name = 'candidate_profiles' AND column_name = 'candidate_id');
+                   OR (table_name = 'candidate_profiles' AND column_name = 'candidate_id')
+                   OR (table_name = 'assessment_recordings' AND column_name = 'cloudinary_url');
             """)
             result = await conn.execute(query)
             found_cols = set(result.fetchall())
-            return len(found_cols) >= 5
+            return len(found_cols) >= 6
         else:
             def inspect_columns(sync_conn):
                 inspector = inspect(sync_conn)
                 tables = inspector.get_table_names()
-                if "candidate_answers" not in tables or "assessment_results" not in tables or "candidate_profiles" not in tables:
+                if "candidate_answers" not in tables or "assessment_results" not in tables or "candidate_profiles" not in tables or "assessment_recordings" not in tables:
                     return False
                 ca_cols = [c["name"] for c in inspector.get_columns("candidate_answers")]
                 ar_cols = [c["name"] for c in inspector.get_columns("assessment_results")]
@@ -303,6 +304,64 @@ async def run_schema_migrations(target_engine):
                     ALTER TABLE users DROP COLUMN IF EXISTS resume_analysis;
                 END IF;
             END $$;
+            """
+        ),
+        (
+            "Create assessment_recordings table if not exists",
+            """
+            CREATE TABLE IF NOT EXISTS assessment_recordings (
+                id UUID PRIMARY KEY,
+                assignment_id UUID REFERENCES assessment_assignments(id) ON DELETE CASCADE,
+                assessment_id UUID NOT NULL REFERENCES assessments(id) ON DELETE CASCADE,
+                candidate_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                started_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP NOT NULL,
+                ended_at TIMESTAMP WITH TIME ZONE,
+                duration INTEGER,
+                status VARCHAR(50) DEFAULT 'INITIALIZED' NOT NULL,
+                storage_provider VARCHAR(50) DEFAULT 'cloudinary' NOT NULL,
+                cloudinary_public_id VARCHAR(255),
+                cloudinary_url VARCHAR(1000),
+                mime_type VARCHAR(100),
+                file_size BIGINT,
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP NOT NULL,
+                updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS ix_assessment_recordings_assignment_id ON assessment_recordings (assignment_id);
+            CREATE INDEX IF NOT EXISTS ix_assessment_recordings_assessment_id ON assessment_recordings (assessment_id);
+            CREATE INDEX IF NOT EXISTS ix_assessment_recordings_candidate_id ON assessment_recordings (candidate_id);
+            """
+        ),
+        (
+            "Add missing columns to assessment_recordings if existing",
+            """
+            DO $$
+            BEGIN
+                IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'assessment_recordings') THEN
+                    ALTER TABLE assessment_recordings ADD COLUMN IF NOT EXISTS started_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP;
+                    ALTER TABLE assessment_recordings ADD COLUMN IF NOT EXISTS ended_at TIMESTAMP WITH TIME ZONE;
+                    ALTER TABLE assessment_recordings ADD COLUMN IF NOT EXISTS mime_type VARCHAR(100);
+                    ALTER TABLE assessment_recordings ADD COLUMN IF NOT EXISTS cloudinary_url VARCHAR(1000);
+                    ALTER TABLE assessment_recordings ADD COLUMN IF NOT EXISTS video_url VARCHAR(1000);
+                    IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'assessment_recordings' AND column_name = 'video_url') THEN
+                        UPDATE assessment_recordings SET cloudinary_url = COALESCE(cloudinary_url, video_url) WHERE cloudinary_url IS NULL;
+                    END IF;
+                END IF;
+            END $$;
+            """
+        ),
+        (
+            "Create assessment_recording_chunks table if not exists",
+            """
+            CREATE TABLE IF NOT EXISTS assessment_recording_chunks (
+                id UUID PRIMARY KEY,
+                recording_id UUID NOT NULL REFERENCES assessment_recordings(id) ON DELETE CASCADE,
+                chunk_index INTEGER NOT NULL,
+                storage_reference VARCHAR(1000),
+                file_size BIGINT,
+                uploaded_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP NOT NULL,
+                status VARCHAR(50) DEFAULT 'COMPLETED' NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS ix_assessment_recording_chunks_recording_id ON assessment_recording_chunks (recording_id);
             """
         ),
     ]

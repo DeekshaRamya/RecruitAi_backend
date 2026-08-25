@@ -2,6 +2,7 @@ import uuid
 from datetime import datetime
 from typing import List, Optional
 from pydantic import BaseModel, Field, ConfigDict, AliasChoices
+from app.schemas.recording import RecordingResponse
 
 class AssessmentStartRequest(BaseModel):
     assignmentId: uuid.UUID
@@ -125,6 +126,9 @@ class AssessmentResultResponse(BaseModel):
     activityLogs: Optional[List[ActivityLogResponse]] = None
     activitySummary: Optional[ActivitySummary] = None
     
+    # Proctoring Recording
+    recording: Optional[RecordingResponse] = None
+
     # Question-by-question details
     questionsAnalysis: Optional[List[QuestionAnalysis]] = None
 

@@ -24,6 +24,7 @@ from app.api.interview import router as interview_router
 from app.api.assignment import router as assignment_router
 from app.api.evaluation import router as evaluation_router
 from app.api.english_assessment import router as english_assessment_router
+from app.api.recordings import router as recordings_router, assessments_recordings_router
 
 
 
@@ -222,6 +223,8 @@ app.include_router(assignment_router)
 app.include_router(evaluation_router)
 app.include_router(interview_router)
 app.include_router(english_assessment_router)
+app.include_router(recordings_router)
+app.include_router(assessments_recordings_router)
 
 
 

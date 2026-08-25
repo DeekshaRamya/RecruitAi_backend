@@ -1,7 +1,7 @@
 import uuid
 import enum
 from datetime import datetime
-from sqlalchemy import String, Enum, DateTime, func, ForeignKey, Uuid, JSON
+from sqlalchemy import String, Enum, DateTime, func, ForeignKey, Uuid, JSON, BigInteger
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.database.database import Base
 
@@ -712,4 +712,127 @@ class AiUsageLog(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
     user = relationship("User", foreign_keys=[user_id])
+
+
+class AssessmentRecording(Base):
+    __tablename__ = "assessment_recordings"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), 
+        primary_key=True, 
+        default=uuid.uuid4
+    )
+    assignment_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("assessment_assignments.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True
+    )
+    assessment_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("assessments.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True
+    )
+    candidate_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True
+    )
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), 
+        server_default=func.now(), 
+        nullable=False
+    )
+    ended_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), 
+        nullable=True
+    )
+    duration: Mapped[int | None] = mapped_column(nullable=True)  # Duration in seconds
+    status: Mapped[str] = mapped_column(
+        String(50), 
+        default="INITIALIZED", 
+        nullable=False
+    )  # "INITIALIZED", "RECORDING", "UPLOADING", "COMPLETED", "FAILED"
+    storage_provider: Mapped[str] = mapped_column(
+        String(50), 
+        default="cloudinary", 
+        nullable=False
+    )
+    cloudinary_public_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    cloudinary_url: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    video_url: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    mime_type: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    file_size: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), 
+        server_default=func.now(), 
+        nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), 
+        server_default=func.now(), 
+        onupdate=func.now(), 
+        nullable=False
+    )
+
+    # Relationships
+    assignment = relationship("AssessmentAssignment")
+    assessment = relationship("Assessment")
+    candidate = relationship("User", foreign_keys=[candidate_id])
+    chunks = relationship("AssessmentRecordingChunk", back_populates="recording", cascade="all, delete-orphan", order_by="AssessmentRecordingChunk.chunk_index")
+
+    # Compatibility properties for frontend camelCase
+    @property
+    def assignmentId(self) -> uuid.UUID | None:
+        return self.assignment_id
+
+    @property
+    def assessmentId(self) -> uuid.UUID:
+        return self.assessment_id
+
+    @property
+    def candidateId(self) -> uuid.UUID:
+        return self.candidate_id
+
+    @property
+    def startedAt(self) -> datetime:
+        return self.started_at
+
+    @property
+    def endedAt(self) -> datetime | None:
+        return self.ended_at
+
+    @property
+    def videoUrl(self) -> str | None:
+        return self.cloudinary_url
+
+
+class AssessmentRecordingChunk(Base):
+    __tablename__ = "assessment_recording_chunks"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), 
+        primary_key=True, 
+        default=uuid.uuid4
+    )
+    recording_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("assessment_recordings.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True
+    )
+    chunk_index: Mapped[int] = mapped_column(nullable=False)
+    storage_reference: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    file_size: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    uploaded_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), 
+        server_default=func.now(), 
+        nullable=False
+    )
+    status: Mapped[str] = mapped_column(String(50), default="COMPLETED", nullable=False)
+
+    recording = relationship("AssessmentRecording", back_populates="chunks")
+
 
