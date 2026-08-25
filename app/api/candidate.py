@@ -8,13 +8,14 @@ from app.dependencies.auth import require_candidate
 from app.database.models import User
 from app.schemas.auth import UserResponse
 from app.utils.file_parser import extract_text
-from app.services.azure_openai_service import AzureOpenAIService
+from app.services.gemini_service import GeminiService
 
 router = APIRouter(prefix="/api/candidate", tags=["Candidate Endpoints"])
 
 # Ensure uploads directory exists
 UPLOAD_DIR = "./uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
+gemini_service = GeminiService()
 
 @router.get(
     "/dashboard",
@@ -64,10 +65,10 @@ async def upload_resume(
     """
     filename = file.filename
     ext = os.path.splitext(filename)[1].lower()
-    if ext != ".pdf":
+    if ext not in [".pdf", ".docx", ".doc"]:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, 
-            detail="Only PDF files are supported."
+            detail="Supported formats: PDF, DOCX, DOC."
         )
         
     # Save file on local disk
@@ -89,22 +90,35 @@ async def upload_resume(
         # Extract text from file bytes
         extracted_text = extract_text(filename, contents)
         
-        # Analyze resume using Azure OpenAI Service
-        ai_service = AzureOpenAIService()
-        analysis_data = await ai_service.analyze_resume(extracted_text)
+        # Analyze resume using Gemini Service
+        analysis_data = await gemini_service.analyze_resume(extracted_text, current_user.full_name or current_user.name)
         
         # Update user columns with AI-extracted details
         current_user.resume_filename = filename
-        current_user.resume_score = int(analysis_data.get("resume_score", random.randint(80, 95)))
-        current_user.python_score = int(analysis_data.get("python_score", random.randint(70, 95)))
-        current_user.sql_score = int(analysis_data.get("sql_score", random.randint(70, 95)))
-        current_user.aptitude_score = int(analysis_data.get("aptitude_score", random.randint(65, 90)))
-        current_user.english_score = int(analysis_data.get("english_score", random.randint(75, 95)))
-        current_user.resume_analysis = list(analysis_data.get("resume_analysis", [
-            "Demonstrates solid background in core Python development.",
-            "Demonstrates practical hands-on experience in SQL database schema design.",
-            "Clear project organization and excellent written communication."
-        ]))
+        current_user.resume_score = int(analysis_data.get("match_score", analysis_data.get("resume_score", 85)))
+        current_user.python_score = int(analysis_data.get("python_score", 80))
+        current_user.sql_score = int(analysis_data.get("sql_score", 82))
+        current_user.aptitude_score = int(analysis_data.get("aptitude_score", 78))
+        current_user.english_score = int(analysis_data.get("english_score", 85))
+        
+        raw_items = (
+            analysis_data.get("skills", []) + 
+            analysis_data.get("technical_skills", []) + 
+            analysis_data.get("technologies", [])
+        )
+        combined_analysis = []
+        seen = set()
+        for item in raw_items:
+            if isinstance(item, str):
+                val = item.strip()
+            elif isinstance(item, dict):
+                val = str(item.get("name") or item.get("skill") or item.get("title") or "")
+            else:
+                val = str(item).strip()
+            if val and val.lower() not in seen:
+                seen.add(val.lower())
+                combined_analysis.append(val)
+        current_user.resume_analysis = combined_analysis if combined_analysis else ["General Software Development"]
         logger.info(f"AI Analysis completed successfully for candidate {current_user.id}")
 
     except Exception as ai_err:

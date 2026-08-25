@@ -106,3 +106,5 @@ active_env/
 # Local configuration
 .env
 .venv/
+# Uploaded files
+uploads/
