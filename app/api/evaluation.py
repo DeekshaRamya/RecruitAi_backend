@@ -18,8 +18,10 @@ from app.database.models import (
     UserRole, 
     CandidateAnswer, 
     AssessmentResult,
-    CandidateActivityLog
+    CandidateActivityLog,
+    AssessmentRecording
 )
+from app.schemas.recording import RecordingResponse
 from app.schemas.evaluation import (
     AssessmentStartRequest,
     AssessmentSubmitRequest,
@@ -1727,6 +1729,40 @@ async def get_result(
                 logger.warning(f"Failed to validate activity log record {getattr(l, 'id', 'unknown')}: {le}")
                 continue
 
+        # Fetch candidate recording if available
+        recording_response = None
+        try:
+            rec_res = await db.execute(
+                select(AssessmentRecording)
+                .where(AssessmentRecording.assignment_id == res_obj.assignment_id)
+                .order_by(AssessmentRecording.created_at.desc())
+            )
+            rec_obj = rec_res.scalars().first()
+            if rec_obj:
+                recording_response = RecordingResponse(
+                    id=rec_obj.id,
+                    assignmentId=rec_obj.assignment_id,
+                    assessmentId=rec_obj.assessment_id,
+                    candidateId=rec_obj.candidate_id,
+                    startedAt=rec_obj.started_at,
+                    endedAt=rec_obj.ended_at,
+                    duration=rec_obj.duration,
+                    status=rec_obj.status,
+                    storageProvider=rec_obj.storage_provider or "cloudinary",
+                    cloudinaryPublicId=rec_obj.cloudinary_public_id,
+                    cloudinaryUrl=rec_obj.cloudinary_url,
+                    videoUrl=rec_obj.cloudinary_url,
+                    mimeType=rec_obj.mime_type,
+                    fileSize=rec_obj.file_size,
+                    createdAt=rec_obj.created_at,
+                    updatedAt=rec_obj.updated_at,
+                    candidateName=candidate_name,
+                    candidateEmail=candidate_email,
+                    assessmentName=assessment_name
+                )
+        except Exception as e:
+            logger.warning(f"Failed to load recording for assignment {res_obj.assignment_id}: {e}")
+
         response_obj = AssessmentResultResponse(
             id=res_obj.id,
             assignmentId=res_obj.assignment_id,
@@ -1756,6 +1792,7 @@ async def get_result(
             hiringRecommendation=str(res_obj.hiring_recommendation) if res_obj.hiring_recommendation is not None else "Awaiting Review",
             activityLogs=log_responses,
             activitySummary=activity_summary,
+            recording=recording_response,
             questionsAnalysis=analysis_list
         )
         logger.info(f"Successfully serialized assessment result details for target ID={target_uuid} (status 200 OK)")
