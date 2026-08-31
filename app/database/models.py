@@ -1,7 +1,7 @@
 import uuid
 import enum
 from datetime import datetime
-from sqlalchemy import String, Enum, DateTime, func, ForeignKey, Uuid, JSON, BigInteger
+from sqlalchemy import String, Enum, DateTime, func, ForeignKey, Uuid, JSON, BigInteger, Boolean, Float
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.database.database import Base
 
@@ -143,7 +143,21 @@ class User(Base):
 
     @property
     def resume_analysis(self) -> list | None:
-        return self.candidate_profile.resume_analysis if self.candidate_profile else None
+        if not self.candidate_profile or self.candidate_profile.resume_analysis is None:
+            return None
+        val = self.candidate_profile.resume_analysis
+        if isinstance(val, list):
+            return [str(item) for item in val if item is not None]
+        if isinstance(val, dict):
+            extracted = val.get("clean_skills") or val.get("skills") or val.get("technical_skills")
+            if isinstance(extracted, list) and extracted:
+                return [str(item) for item in extracted if item is not None]
+            if "resume_summary" in val and isinstance(val["resume_summary"], str):
+                return [val["resume_summary"]]
+            return [f"{k}: {v}" for k, v in val.items() if isinstance(v, (str, int, float))]
+        if isinstance(val, str):
+            return [val]
+        return None
 
     @resume_analysis.setter
     def resume_analysis(self, val: list | None):
@@ -192,6 +206,7 @@ class Assessment(Base):
     status: Mapped[str] = mapped_column(String(50), default="Active", nullable=False)
     candidates_assigned: Mapped[int] = mapped_column(default=0, nullable=False)
     questions: Mapped[list] = mapped_column(JSON, nullable=False)
+    camera_monitoring: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     created_by: Mapped[uuid.UUID | None] = mapped_column(
         Uuid(as_uuid=True),
         ForeignKey("users.id", ondelete="SET NULL"),
@@ -212,6 +227,10 @@ class Assessment(Base):
     @property
     def candidatesAssigned(self) -> int:
         return self.candidates_assigned
+
+    @property
+    def cameraMonitoring(self) -> bool:
+        return self.camera_monitoring
 
     @property
     def createdBy(self) -> uuid.UUID | None:
@@ -266,6 +285,10 @@ class AssessmentAssignment(Base):
         default="ASSIGNED",
         nullable=False
     )
+    camera_monitoring: Mapped[bool | None] = mapped_column(
+        Boolean,
+        nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), 
         server_default=func.now(),
@@ -292,6 +315,12 @@ class AssessmentAssignment(Base):
     @property
     def candidateId(self) -> uuid.UUID:
         return self.candidate_id
+
+    @property
+    def cameraMonitoring(self) -> bool:
+        if self.camera_monitoring is not None:
+            return bool(self.camera_monitoring)
+        return bool(self.assessment.camera_monitoring) if self.assessment else False
 
     @property
     def recruiterId(self) -> uuid.UUID:
@@ -478,6 +507,8 @@ class CandidateActivityLog(Base):
     remaining_time: Mapped[str | None] = mapped_column(String(50), nullable=True)
     browser_info: Mapped[str | None] = mapped_column(String(500), nullable=True)
     details: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    screenshot_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    duration: Mapped[float | None] = mapped_column(Float, nullable=True)
 
     # Relationships
     assignment = relationship("AssessmentAssignment")
@@ -508,6 +539,14 @@ class CandidateActivityLog(Base):
     @property
     def questionNumber(self) -> int | None:
         return self.question_number
+
+    @property
+    def screenshotUrl(self) -> str | None:
+        return self.screenshot_url
+
+    @property
+    def eventDuration(self) -> float | None:
+        return self.duration
 
     @property
     def remainingTime(self) -> str | None:

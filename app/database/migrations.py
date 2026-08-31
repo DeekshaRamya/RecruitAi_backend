@@ -364,6 +364,24 @@ async def run_schema_migrations(target_engine):
             CREATE INDEX IF NOT EXISTS ix_assessment_recording_chunks_recording_id ON assessment_recording_chunks (recording_id);
             """
         ),
+        (
+            "Add camera_monitoring and proctoring columns to assessments, assignments, and activity logs",
+            """
+            DO $$
+            BEGIN
+                IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'assessments') THEN
+                    ALTER TABLE assessments ADD COLUMN IF NOT EXISTS camera_monitoring BOOLEAN DEFAULT FALSE NOT NULL;
+                END IF;
+                IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'assessment_assignments') THEN
+                    ALTER TABLE assessment_assignments ADD COLUMN IF NOT EXISTS camera_monitoring BOOLEAN DEFAULT NULL;
+                END IF;
+                IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'candidate_activity_logs') THEN
+                    ALTER TABLE candidate_activity_logs ADD COLUMN IF NOT EXISTS screenshot_url VARCHAR(500) DEFAULT NULL;
+                    ALTER TABLE candidate_activity_logs ADD COLUMN IF NOT EXISTS duration DOUBLE PRECISION DEFAULT NULL;
+                END IF;
+            END $$;
+            """
+        ),
     ]
 
     is_postgres = target_engine.dialect.name == "postgresql"

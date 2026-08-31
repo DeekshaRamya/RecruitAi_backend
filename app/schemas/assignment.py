@@ -12,6 +12,7 @@ class AssignmentCreateRequest(BaseModel):
     startTime: Optional[str] = None
     endTime: Optional[str] = None
     instructions: Optional[str] = None
+    cameraMonitoring: Optional[bool] = None
 
 class AssignmentStatusUpdate(BaseModel):
     status: str
@@ -37,6 +38,7 @@ class AssignmentResponse(BaseModel):
     endTime: Optional[datetime] = None
     instructions: Optional[str] = None
     status: str
+    cameraMonitoring: Optional[bool] = False
     createdAt: datetime
     updatedAt: datetime
     assessment: Optional[AssessmentResponse] = None

@@ -1,3 +1,4 @@
+import os
 import uuid
 import re
 import asyncio
@@ -1838,6 +1839,13 @@ def _build_activity_summary(logs: List[CandidateActivityLog], auto_submitted: bo
             summary.fullScreenExits += 1
         elif t in {"PAGE_REFRESH", "PAGE_RELOAD"}:
             summary.pageRefreshes += 1
+        elif t in {
+            "FACE_NOT_DETECTED", "HEAD_TURNED_LEFT", "HEAD_TURNED_RIGHT",
+            "HEAD_LOOKING_UP", "HEAD_LOOKING_DOWN", "EYES_LOOKING_LEFT",
+            "EYES_LOOKING_RIGHT", "EYES_LOOKING_UP", "EYES_LOOKING_DOWN",
+            "MULTIPLE_FACES", "CAMERA_VIOLATION"
+        }:
+            summary.cameraViolations += 1
 
     summary.totalWarnings = max_warn
     return summary
@@ -1865,6 +1873,33 @@ async def record_activity_log(
 
     user_agent = request.headers.get("user-agent", payload.browserInfo or "Unknown Browser")
 
+    # Handle base64 screenshot decoding & saving
+    screenshot_url = payload.screenshotUrl
+    if payload.screenshot and payload.screenshot.startswith("data:image"):
+        try:
+            import base64
+            import time
+            proctor_dir = os.path.abspath(os.path.join("uploads", "proctoring"))
+            os.makedirs(proctor_dir, exist_ok=True)
+
+            header, base64_data = payload.screenshot.split(",", 1)
+            ext = "png" if "png" in header else "jpg"
+            filename = f"{payload.assignmentId}_{int(time.time() * 1000)}.{ext}"
+            file_path = os.path.join(proctor_dir, filename)
+
+            img_bytes = base64.b64decode(base64_data)
+            with open(file_path, "wb") as f:
+                f.write(img_bytes)
+
+            screenshot_url = f"/uploads/proctoring/{filename}"
+            logger.info(f"[Proctoring] Screenshot saved successfully: {file_path} ({len(img_bytes)} bytes) -> {screenshot_url}")
+        except Exception as img_err:
+            logger.error(f"[Proctoring] Failed to save proctoring screenshot: {img_err}", exc_info=True)
+    elif payload.screenshot:
+        logger.warning(f"[Proctoring] Received screenshot payload but format is unexpected (len={len(payload.screenshot)})")
+    else:
+        logger.info(f"[Proctoring] No screenshot payload attached for activity {payload.activityType}")
+
     log_entry = CandidateActivityLog(
         assignment_id=payload.assignmentId,
         candidate_id=current_user.id,
@@ -1874,7 +1909,9 @@ async def record_activity_log(
         question_number=payload.questionNumber,
         remaining_time=payload.remainingTime,
         browser_info=user_agent[:500],
-        details=payload.details
+        details=payload.details,
+        screenshot_url=screenshot_url,
+        duration=payload.duration
     )
     db.add(log_entry)
     await db.commit()

@@ -1,8 +1,10 @@
 import asyncio
 import logging
+import os
 import sys
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, status
+from fastapi.staticfiles import StaticFiles
 from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.exceptions import RequestValidationError
@@ -225,6 +227,10 @@ app.include_router(interview_router)
 app.include_router(english_assessment_router)
 app.include_router(recordings_router)
 app.include_router(assessments_recordings_router)
+
+# Mount uploads directory for proctoring screenshots and uploaded files
+os.makedirs("uploads/proctoring", exist_ok=True)
+app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 
 
 

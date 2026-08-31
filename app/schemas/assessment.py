@@ -167,6 +167,7 @@ class AssessmentSaveRequest(BaseModel):
     createdDate: str
     status: str = "Active"
     candidatesAssigned: int = 0
+    cameraMonitoring: Optional[bool] = False
     questions: List[dict]
 
 class AssessmentResponse(BaseModel):
@@ -181,6 +182,7 @@ class AssessmentResponse(BaseModel):
     createdDate: str
     status: str
     candidatesAssigned: int
+    cameraMonitoring: Optional[bool] = False
     questions: List[dict]
     created_by: Optional[uuid.UUID] = None
     createdBy: Optional[uuid.UUID] = None
@@ -191,4 +193,5 @@ class AssessmentUpdateRequest(BaseModel):
     difficulty: Optional[str] = None
     duration: Optional[str] = None
     questionsCount: Optional[int] = None
+    cameraMonitoring: Optional[bool] = None
     questions: Optional[List[dict]] = None

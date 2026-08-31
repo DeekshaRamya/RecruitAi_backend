@@ -195,6 +195,10 @@ async def create_assignment(
         status_val = "ASSIGNED"
 
     # 5. Save assignment
+    cam_monitoring = request.cameraMonitoring
+    if cam_monitoring is None:
+        cam_monitoring = getattr(assessment, "camera_monitoring", False)
+
     db_assignment = AssessmentAssignment(
         assessment_id=request.assessmentId,
         candidate_id=candidate.id,
@@ -203,7 +207,8 @@ async def create_assignment(
         due_date=due_date,
         start_time=start_time,
         end_time=end_time,
-        instructions=request.instructions
+        instructions=request.instructions,
+        camera_monitoring=cam_monitoring
     )
 
     db.add(db_assignment)

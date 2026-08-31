@@ -190,80 +190,96 @@ class AssessmentGenerationService:
         AdventureWorks database via the SQL Execution API. Populates exact tabular expected output
         format with actual column names and verifies query executability.
         """
+        if not questions:
+            return questions
+
+        # Fast path: check if any question is actually an SQL question
+        sql_questions = [q for q in questions if str(q.get("subject", "")).upper() == "SQL"]
+        if not sql_questions:
+            return questions
+
         from app.services.code_execution_service import CodeExecutionService
         from app.services.sql_schema_service import SqlSchemaService
 
+        try:
+            live_schema_info = SqlSchemaService.get_live_schema()
+            tables_map = live_schema_info.get("tables_map", {})
+            logger.info(f"[SQL Validation] Loaded {len(tables_map)} tables from live database metadata for assessment verification.")
+        except Exception as schema_err:
+            logger.warning(f"[SQL Validation] Could not load live SQL schema for enrichment: {schema_err}. Skipping live SQL validation.")
+            return questions
+
         executor = CodeExecutionService()
-        live_schema_info = SqlSchemaService.get_live_schema()
-        tables_map = live_schema_info.get("tables_map", {})
-        logger.info(f"[SQL Validation] Loaded {len(tables_map)} tables from live database metadata for assessment verification.")
 
         for q in questions:
             subject = str(q.get("subject", "")).upper()
             if subject == "SQL":
-                # Reuse existing metadata if question was already enriched/validated (e.g. from SqlScenarioService)
-                if q.get("is_enriched") or (q.get("databaseSchema") and q.get("sampleData") and q.get("expectedOutput")):
-                    logger.info(f"[SQL Validation] Reusing existing metadata for already verified SQL question '{q.get('topic')}'. Skipping duplicate DB execution.")
-                    continue
-                expected_query = q.get("expectedAnswer") or q.get("correctAnswer") or q.get("answer") or ""
-                logger.info(f"[SQL Validation] Evaluating AI generated SQL query against live AdventureWorks DB: {expected_query}")
+                try:
+                    # Reuse existing metadata if question was already enriched/validated (e.g. from SqlScenarioService)
+                    if q.get("is_enriched") or (q.get("databaseSchema") and q.get("sampleData") and q.get("expectedOutput")):
+                        logger.info(f"[SQL Validation] Reusing existing metadata for already verified SQL question '{q.get('topic')}'. Skipping duplicate DB execution.")
+                        continue
+                    expected_query = q.get("expectedAnswer") or q.get("correctAnswer") or q.get("answer") or ""
+                    logger.info(f"[SQL Validation] Evaluating AI generated SQL query against live AdventureWorks DB: {expected_query}")
 
-                # Execute against live AdventureWorks DB via SQL API
-                res = executor.run_sql(query=expected_query)
-                logger.info(f"[SQL Validation] Execution Result Status: {res.get('status')} | Rows returned: {res.get('rowCount')} | Error: {res.get('runtime_error')}")
+                    # Execute against live AdventureWorks DB via SQL API
+                    res = executor.run_sql(query=expected_query)
+                    logger.info(f"[SQL Validation] Execution Result Status: {res.get('status')} | Rows returned: {res.get('rowCount')} | Error: {res.get('runtime_error')}")
 
-                if res.get("status") != "Success" or not res.get("columns") or any(w in expected_query.lower() for w in ["evaluation_records", "dbo.orders", "users"]):
-                    logger.warning(f"[SQL Validation] Query invalid or failed execution: {res.get('runtime_error')}. Executing dynamic live schema query.")
-                    dynamic_target = list(tables_map.keys())[0] if tables_map else "HumanResources.Employee"
-                    dyn_query = f"SELECT * FROM {dynamic_target};"
-                    res = executor.run_sql(query=dyn_query)
-                    q["expectedAnswer"] = dyn_query
-                    q["correctAnswer"] = dyn_query
-                    expected_query = dyn_query
+                    if res.get("status") != "Success" or not res.get("columns") or any(w in expected_query.lower() for w in ["evaluation_records", "dbo.orders", "users"]):
+                        logger.warning(f"[SQL Validation] Query invalid or failed execution: {res.get('runtime_error')}. Executing dynamic live schema query.")
+                        dynamic_target = list(tables_map.keys())[0] if tables_map else "HumanResources.Employee"
+                        dyn_query = f"SELECT * FROM {dynamic_target};"
+                        res = executor.run_sql(query=dyn_query)
+                        q["expectedAnswer"] = dyn_query
+                        q["correctAnswer"] = dyn_query
+                        expected_query = dyn_query
 
-                # 1. Populate real Schema definition in DDL format for ALL referenced tables
-                from app.services.sql_schema_service import SqlSchemaService
-                q["databaseSchema"] = SqlSchemaService.get_database_schemas_for_question(q, tables_map)
+                    # 1. Populate real Schema definition in DDL format for ALL referenced tables
+                    from app.services.sql_schema_service import SqlSchemaService
+                    q["databaseSchema"] = SqlSchemaService.get_database_schemas_for_question(q, tables_map)
 
-                ref_tables = SqlSchemaService.get_referenced_tables(q, tables_map)
+                    ref_tables = SqlSchemaService.get_referenced_tables(q, tables_map)
 
-                # 2. Dynamically execute SELECT TOP 5 against SQL Server for Sample Data across all referenced tables
-                sample_lines = []
-                for t_name in ref_tables:
-                    logger.info(f"[SQL Validation] Retrieving real live sample data from SQL Server: SELECT TOP 5 * FROM {t_name}")
-                    sample_res = executor.run_sql(query=f"SELECT TOP 5 * FROM {t_name};")
-                    if sample_res.get("status") == "Success" and sample_res.get("rows"):
-                        sample_lines.append(f"-- Real data retrieved dynamically from connected SQL Server ({t_name})")
-                        s_cols = sample_res.get("columns", [])
-                        for s_row in sample_res.get("rows", [])[:3]:
-                            vals = []
-                            for c in s_cols:
-                                val = s_row.get(c)
-                                if val is None:
-                                    vals.append("NULL")
-                                elif isinstance(val, (int, float)):
-                                    vals.append(str(val))
-                                else:
-                                    clean_val = str(val).replace("'", "''")
-                                    vals.append(f"'{clean_val}'")
-                            sample_lines.append(f"INSERT INTO {t_name} VALUES ({', '.join(vals)});")
+                    # 2. Dynamically execute SELECT TOP 5 against SQL Server for Sample Data across all referenced tables
+                    sample_lines = []
+                    for t_name in ref_tables:
+                        logger.info(f"[SQL Validation] Retrieving real live sample data from SQL Server: SELECT TOP 5 * FROM {t_name}")
+                        sample_res = executor.run_sql(query=f"SELECT TOP 5 * FROM {t_name};")
+                        if sample_res.get("status") == "Success" and sample_res.get("rows"):
+                            sample_lines.append(f"-- Real data retrieved dynamically from connected SQL Server ({t_name})")
+                            s_cols = sample_res.get("columns", [])
+                            for s_row in sample_res.get("rows", [])[:3]:
+                                vals = []
+                                for c in s_cols:
+                                    val = s_row.get(c)
+                                    if val is None:
+                                        vals.append("NULL")
+                                    elif isinstance(val, (int, float)):
+                                        vals.append(str(val))
+                                    else:
+                                        clean_val = str(val).replace("'", "''")
+                                        vals.append(f"'{clean_val}'")
+                                sample_lines.append(f"INSERT INTO {t_name} VALUES ({', '.join(vals)});")
 
-                q["sampleData"] = sample_lines if sample_lines else [f"-- Connected to tables: {', '.join(ref_tables)}"]
+                    q["sampleData"] = sample_lines if sample_lines else [f"-- Connected to tables: {', '.join(ref_tables)}"]
 
-                # 3. Automatically reference selected real table in editor placeholder
-                q["starterCode"] = "-- Write your SQL query here"
-                q["starter_code"] = "-- Write your SQL query here"
+                    # 3. Automatically reference selected real table in editor placeholder
+                    q["starterCode"] = "-- Write your SQL query here"
+                    q["starter_code"] = "-- Write your SQL query here"
 
-                # 4. Format tabular expected output from actual query execution results
-                columns = res.get("columns", [])
-                rows = res.get("rows", [])
-                full_markdown_table = self._format_rows_to_markdown_table(columns, rows, max_rows=None)
-                preview_markdown_table = self._format_rows_to_markdown_table(columns, rows, max_rows=5)
-                q["exampleOutput"] = preview_markdown_table
-                q["sampleOutput"] = preview_markdown_table
-                q["expectedOutput"] = full_markdown_table
-                q["expectedRows"] = rows
-                logger.info(f"[SQL Validation] Question validation successful for tables ({', '.join(ref_tables)}). Expected output row count: {len(rows)}")
+                    # 4. Format tabular expected output from actual query execution results
+                    columns = res.get("columns", [])
+                    rows = res.get("rows", [])
+                    full_markdown_table = self._format_rows_to_markdown_table(columns, rows, max_rows=None)
+                    preview_markdown_table = self._format_rows_to_markdown_table(columns, rows, max_rows=5)
+                    q["exampleOutput"] = preview_markdown_table
+                    q["sampleOutput"] = preview_markdown_table
+                    q["expectedOutput"] = full_markdown_table
+                    q["expectedRows"] = rows
+                    logger.info(f"[SQL Validation] Question validation successful for tables ({', '.join(ref_tables)}). Expected output row count: {len(rows)}")
+                except Exception as q_err:
+                    logger.warning(f"[SQL Validation] Error verifying SQL question '{q.get('topic')}': {q_err}")
 
         return questions
 

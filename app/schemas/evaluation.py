@@ -46,12 +46,15 @@ class QuestionAnalysis(BaseModel):
 
 class ActivityLogCreate(BaseModel):
     assignmentId: uuid.UUID
-    activityType: str  # TAB_SWITCH, WINDOW_BLUR, WINDOW_FOCUS, ESC_KEY, COPY_ATTEMPT, PASTE_ATTEMPT, CUT_ATTEMPT, RIGHT_CLICK, DEVTOOLS_ATTEMPT, FULLSCREEN_EXIT, PAGE_REFRESH, PAGE_RELOAD
+    activityType: str  # TAB_SWITCH, WINDOW_BLUR, WINDOW_FOCUS, ESC_KEY, COPY_ATTEMPT, PASTE_ATTEMPT, CUT_ATTEMPT, RIGHT_CLICK, DEVTOOLS_ATTEMPT, FULLSCREEN_EXIT, PAGE_REFRESH, PAGE_RELOAD, FACE_NOT_DETECTED, HEAD_TURNED_LEFT, HEAD_TURNED_RIGHT, HEAD_LOOKING_UP, HEAD_LOOKING_DOWN, EYES_LOOKING_LEFT, EYES_LOOKING_RIGHT, EYES_LOOKING_UP, EYES_LOOKING_DOWN, MULTIPLE_FACES
     warningCount: Optional[int] = 0
     questionNumber: Optional[int] = None
     remainingTime: Optional[str] = None
     browserInfo: Optional[str] = None
     details: Optional[str] = None
+    screenshot: Optional[str] = None  # Base64 data URL
+    screenshotUrl: Optional[str] = None
+    duration: Optional[float] = None  # Duration in seconds
 
 class ActivityLogResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True, populate_by_name=True)
@@ -67,6 +70,8 @@ class ActivityLogResponse(BaseModel):
     remainingTime: Optional[str] = Field(default=None, validation_alias=AliasChoices('remainingTime', 'remaining_time'))
     browserInfo: Optional[str] = Field(default=None, validation_alias=AliasChoices('browserInfo', 'browser_info'))
     details: Optional[str] = None
+    screenshotUrl: Optional[str] = Field(default=None, validation_alias=AliasChoices('screenshotUrl', 'screenshot_url'))
+    duration: Optional[float] = None
 
 class ActivitySummary(BaseModel):
     totalWarnings: int = 0
@@ -81,6 +86,7 @@ class ActivitySummary(BaseModel):
     devToolsAttempts: int = 0
     fullScreenExits: int = 0
     pageRefreshes: int = 0
+    cameraViolations: int = 0
     autoSubmitted: bool = False
 
 class AssessmentResultResponse(BaseModel):

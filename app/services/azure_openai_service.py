@@ -1353,12 +1353,15 @@ RESPONSE SCHEMA (RETURN RAW CLEAN JSON ONLY):
 
                 # SQL specific validation against live AdventureWorks schema (No hardcoded/mock tables!)
                 if q["subject"].upper() == "SQL":
-                    from app.services.sql_schema_service import SqlSchemaService
-                    live_schema = SqlSchemaService.get_live_schema()
-                    tables_map = live_schema.get("tables_map", {})
+                    try:
+                        from app.services.sql_schema_service import SqlSchemaService
+                        live_schema = SqlSchemaService.get_live_schema()
+                        tables_map = live_schema.get("tables_map", {})
 
-                    if not q.get("databaseSchema") or any("evaluation_records" in str(s).lower() for s in q.get("databaseSchema", [])):
-                        q["databaseSchema"] = SqlSchemaService.get_database_schemas_for_question(q, tables_map)
+                        if not q.get("databaseSchema") or any("evaluation_records" in str(s).lower() for s in q.get("databaseSchema", [])):
+                            q["databaseSchema"] = SqlSchemaService.get_database_schemas_for_question(q, tables_map)
+                    except Exception as schema_err:
+                        logger.warning(f"[AzureOpenAIService] Could not fetch live SQL schema: {schema_err}")
 
                 # Final strict validation and similarity check for Python and SQL scenario questions
                 if q["type"] == "SCENARIO":

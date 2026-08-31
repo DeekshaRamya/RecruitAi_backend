@@ -205,6 +205,8 @@ async def _save_assessment_data(request: AssessmentSaveRequest, db: AsyncSession
             existing_asm.duration = request.duration
             existing_asm.questions_count = request.questionsCount
             existing_asm.created_date = request.createdDate
+            if request.cameraMonitoring is not None:
+                existing_asm.camera_monitoring = request.cameraMonitoring
             if current_user and not existing_asm.created_by:
                 existing_asm.created_by = current_user.id
             await db.commit()
@@ -221,6 +223,7 @@ async def _save_assessment_data(request: AssessmentSaveRequest, db: AsyncSession
         status=request.status,
         candidates_assigned=0,
         questions=sorted_q,
+        camera_monitoring=request.cameraMonitoring or False,
         created_by=current_user.id if current_user else None
     )
     db.add(db_assessment)
@@ -280,6 +283,8 @@ async def _update_assessment_data(id: str, request: AssessmentUpdateRequest, db:
         assessment.questions_count = request.questionsCount
     if request.questions is not None:
         assessment.questions = request.questions
+    if request.cameraMonitoring is not None:
+        assessment.camera_monitoring = request.cameraMonitoring
 
     await db.commit()
     await db.refresh(assessment)
