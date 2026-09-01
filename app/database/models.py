@@ -320,7 +320,7 @@ class AssessmentAssignment(Base):
     def cameraMonitoring(self) -> bool:
         if self.camera_monitoring is not None:
             return bool(self.camera_monitoring)
-        return bool(self.assessment.camera_monitoring) if self.assessment else False
+        return False
 
     @property
     def recruiterId(self) -> uuid.UUID:

@@ -1794,6 +1794,7 @@ async def get_result(
             activityLogs=log_responses,
             activitySummary=activity_summary,
             recording=recording_response,
+            cameraMonitoring=bool(res_obj.assignment.camera_monitoring) if res_obj.assignment else False,
             questionsAnalysis=analysis_list
         )
         logger.info(f"Successfully serialized assessment result details for target ID={target_uuid} (status 200 OK)")
@@ -1870,6 +1871,17 @@ async def record_activity_log(
     assignment = assignment_res.scalar_one_or_none()
     if not assignment:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Assessment assignment not found")
+
+    # Strict camera monitoring safeguard: If camera was disabled by recruiter, ignore camera violations
+    camera_violation_types = {
+        'FACE_NOT_DETECTED', 'MULTIPLE_FACES', 'HEAD_TURNED_LEFT', 'HEAD_TURNED_RIGHT',
+        'HEAD_LOOKING_UP', 'HEAD_LOOKING_DOWN', 'EYES_LOOKING_LEFT', 'EYES_LOOKING_RIGHT',
+        'EYES_LOOKING_UP', 'EYES_LOOKING_DOWN', 'CAMERA_VIOLATION'
+    }
+    is_cam_violation = (payload.activityType or "").upper() in camera_violation_types
+    if is_cam_violation and not getattr(assignment, 'camera_monitoring', False):
+        logger.info(f"[Proctoring] Discarding camera violation '{payload.activityType}' because camera monitoring is disabled for assignment {assignment.id}")
+        return {"success": True, "ignored": True, "message": "Camera monitoring is disabled for this assignment"}
 
     user_agent = request.headers.get("user-agent", payload.browserInfo or "Unknown Browser")
 
@@ -2004,6 +2016,7 @@ async def get_candidate_results(
                 overallStrengths=res_obj.overall_strengths,
                 overallWeaknesses=res_obj.overall_weaknesses,
                 hiringRecommendation=res_obj.hiring_recommendation,
+                cameraMonitoring=bool(res_obj.assignment.camera_monitoring) if res_obj.assignment else False,
                 questionsAnalysis=None  # summary view does not require full question detail
             )
         )
@@ -2075,6 +2088,7 @@ async def get_recruiter_results(
                 overallStrengths=res_obj.overall_strengths,
                 overallWeaknesses=res_obj.overall_weaknesses,
                 hiringRecommendation=res_obj.hiring_recommendation,
+                cameraMonitoring=bool(res_obj.assignment.camera_monitoring) if res_obj.assignment else False,
                 questionsAnalysis=None  # summary view does not require full question detail
             )
         )

@@ -135,6 +135,9 @@ class AssessmentResultResponse(BaseModel):
     # Proctoring Recording
     recording: Optional[RecordingResponse] = None
 
+    # Camera Monitoring setting for this assignment
+    cameraMonitoring: Optional[bool] = False
+
     # Question-by-question details
     questionsAnalysis: Optional[List[QuestionAnalysis]] = None
 

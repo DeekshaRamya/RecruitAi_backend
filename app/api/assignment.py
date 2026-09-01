@@ -195,9 +195,7 @@ async def create_assignment(
         status_val = "ASSIGNED"
 
     # 5. Save assignment
-    cam_monitoring = request.cameraMonitoring
-    if cam_monitoring is None:
-        cam_monitoring = getattr(assessment, "camera_monitoring", False)
+    cam_monitoring = bool(request.cameraMonitoring) if request.cameraMonitoring is not None else False
 
     db_assignment = AssessmentAssignment(
         assessment_id=request.assessmentId,
